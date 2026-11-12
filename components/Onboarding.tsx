@@ -28,6 +28,8 @@ interface FormData {
   trainingNotes: string;
   dietPreferences: string[];
   allergies: string;
+  foodNotes: string;
+  mealsPerDay: string;
 }
 
 export default function Onboarding() {
@@ -57,7 +59,9 @@ export default function Onboarding() {
     equipmentAccess: [],
     trainingNotes: '',
     dietPreferences: [],
-    allergies: ''
+    allergies: '',
+    foodNotes: '',
+    mealsPerDay: '4'
   });
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -472,6 +476,36 @@ export default function Onboarding() {
                           addLabel={t('preferences.addDiet')}
                         />
                       </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                        {t('preferences.mealsPerDay')}
+                      </label>
+                      <select
+                        name="mealsPerDay"
+                        value={formData.mealsPerDay}
+                        onChange={handleInputChange}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-fitness-orange focus:ring-2 focus:ring-fitness-orange/20 transition-all dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                      >
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                        {t('preferences.foodNotes')}
+                      </label>
+                      <textarea
+                        name="foodNotes"
+                        value={formData.foodNotes}
+                        onChange={handleInputChange}
+                        maxLength={500}
+                        placeholder={t('preferences.foodNotesPlaceholder')}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-fitness-orange focus:ring-2 focus:ring-fitness-orange/20 transition-all resize-none dark:bg-gray-700 dark:border-gray-600 dark:text-white h-24"
+                      />
                     </div>
 
                     <div>

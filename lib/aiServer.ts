@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { DEMO_KEYS } from './exercises'
 import { compactPlan, sanitizeChanges } from './plan'
 import { detectLanguage, type ChatResult, type ChatTurn, type ExerciseGuide } from './aiShared'
+import { calculateUserMetrics, proteinPerKg } from './utils'
 
 // Everything that talks to Gemini lives here and runs only on the server (see app/api/ai/route.ts),
 // so the API key never reaches the browser.
@@ -94,11 +95,50 @@ const line = (value: unknown, max = 80) =>
   value == null ? '' : String(value).replace(/\s+/g, ' ').trim().slice(0, max)
 const list = (value: unknown) => (Array.isArray(value) ? value : []).slice(0, 12).map((item) => line(item, 40)).filter(Boolean).join(', ')
 
+const mealsPerDay = (userData: any) => Math.min(Math.max(Math.round(Number(userData?.mealsPerDay)) || 4, 3), 5)
+
+// Shared by the plan and the chat, so a swapped or edited meal follows the same rules as a generated one.
+// The numbers follow the ISSN position stands (protein and exercise, nutrient timing, diets and body composition)
+// and the WHO healthy diet guidance.
+function nutritionRules(userData: any): string {
+  const weight = Number(userData?.weight) || 0
+  const goal = String(userData?.fitnessGoal || '')
+  const meals = mealsPerDay(userData)
+  const mainMealProtein = weight ? `${Math.round(weight * 0.3)} g` : '25 g'
+  const goalAdvice =
+    goal === 'muscle_gain'
+      ? 'Goal is muscle gain: a moderate surplus from ordinary food. Prefer energy-dense staples that are easy to eat in volume (rice, pasta, potatoes, bread, oats, milk, eggs, minced meat) and make the last meal of the day rich in slow dairy protein (cottage cheese, kefir, yogurt) when the diet allows it.'
+      : goal === 'fat_loss' || goal === 'weight_loss'
+      ? 'Goal is fat loss: a moderate deficit that is easy to live with. Prefer filling, high-volume food (lean meat and fish, eggs, cottage cheese, potatoes, buckwheat, legumes, soups, lots of vegetables), keep protein high in every meal, and spend the calories on food rather than on sweet drinks, sauces and excess oil.'
+      : 'Goal is health and performance: balanced plates, enough carbohydrates to train well, no extremes.'
+
+  return `Plan the food the way a sports dietitian, a nutritionist and a strength coach would do it together for a real client: evidence-based, realistic, and easy to follow for months.
+
+      How a professional builds the day:
+      - Protein: ${proteinPerKg(goal)} g per kg of body weight per day (never outside 1.5-2 g per kg, and not higher even if more would fit the calories). Spread it evenly: every main meal (breakfast, lunch, dinner) has at least ${mainMealProtein} of protein from a complete source (meat, poultry, fish, eggs, dairy; for plant-based diets combine legumes with grains or use soy), and a snack has 10-20 g where possible. No meal carries more than half of the day's protein.
+      - Carbohydrates: mostly slow, minimally processed staples (buckwheat, oats, rice, pasta, potatoes, bulgur, whole-grain bread, legumes), plus fruit. On training days give more carbohydrates and put a good part of them in the meals around the workout; on rest days give fewer carbohydrates and the same protein.
+      - Fats: mostly unsaturated (vegetable oil, nuts, seeds, fish). Include fish 1-2 times a week, choosing affordable kinds (pollock, hake, mackerel, herring, canned fish). Keep fried food, sausages, processed meat, pastries and sweets to a minimum. Always count cooking oil and dressings, in grams.
+      - Vegetables and fruit: at least 400 g a day in total, with a vegetable or salad in every lunch and dinner, so the day has enough fibre (about 14 g per 1000 kcal).
+      - Exactly ${meals} meals a day (${meals === 3 ? 'breakfast, lunch, dinner' : meals === 4 ? 'breakfast, lunch, dinner and one snack' : 'breakfast, lunch, dinner and two snacks: one between breakfast and lunch, one between lunch and dinner'}), 3-4 hours apart.
+      - ${goalAdvice}
+      - Numbers are honest: take calories and macros from standard food composition tables for the amounts you wrote, so that calories are close to protein x 4 + carbs x 4 + fats x 9. Each day's meals add up to the day's calories and to the daily protein within about 10%.
+
+      How the dishes look:
+      - Plain everyday home food, the kind people really cook on a weekday — not restaurant or "fitness blog" dishes.
+      - Lunch and dinner are: a staple side (rice, buckwheat, pasta, potatoes, bulgur, bread) + a simple protein (chicken, turkey, eggs, minced meat, fish, cottage cheese, beans) + a vegetable or a simple salad. Breakfast and snacks are just as simple (porridge, eggs, sandwiches, cottage cheese, yogurt, kefir, fruit, nuts).
+      - 3-5 common, affordable ingredients from an ordinary supermarket in the user's country, up to about 25 minutes of active cooking, simple methods (boil, stew, bake, pan with little oil). No exotic or expensive ingredients (quinoa, avocado, salmon steaks, chia, tofu and the like) unless the user's diet or own wishes call for them.
+      - Plan a weekly rotation, not seven unique days: 3-4 different breakfasts, 4-5 different lunch and dinner dishes and 3-4 different snacks for the whole week. Each lunch or dinner dish appears on 2-3 days so it is cooked once in a bigger batch. Mix them so that every day is a different combination: never repeat a whole day and never alternate two fixed day menus.
+      - "options" holds exactly one dish per meal unless the user asks for alternatives. It is one complete dish written as: dish name (ingredient amount, ingredient amount, ...), with the amount of every ingredient in grams of ready-to-eat food (cooked weight for grains, pasta and meat), or pieces for eggs and whole fruit. Example: "Chicken with rice and cucumber (chicken breast 150 g, boiled rice 200 g, cucumber 100 g, vegetable oil 5 g)".
+      - Write the units in the language of the plan (for example "г", "мл", "шт." in Russian and Ukrainian).`
+}
+
 export async function planFromAI(userData: any, locale: string, previous?: any) {
+  // Targets come from the profile, not from the model: it tends to overshoot protein.
+  const targets = calculateUserMetrics(userData)
   const lastWeek = previous?.workouts ? JSON.stringify(previous.workouts).slice(0, 6000) : ''
   const lifts = previous?.lifts && Object.keys(previous.lifts).length ? JSON.stringify(previous.lifts).slice(0, 1500) : ''
   const prompt = `
-      You are an elite fitness coach. Create a JSON fitness plan for this user.
+      You are a team of an elite strength and conditioning coach, a sports dietitian and a nutritionist with years of practice with ordinary people, not only athletes. Create a JSON fitness plan for this user.
       Write every text value (focus, exercise and meal names, options, notes, tips) in ${LANGUAGE_NAMES[locale] || 'English'}. Keep the JSON keys in English.
 
       User Profile:
@@ -113,7 +153,9 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
       - Equipment: ${list(userData?.equipmentAccess)}
       - Training wishes and limitations (in the user's own words; follow them): ${line(userData?.trainingNotes, 500) || 'none'}
       - Diet: ${list(userData?.dietPreferences)}
+      - Foods and dishes the user likes and cooks (in the user's own words; use them often, and add other equally simple foods for variety): ${line(userData?.foodNotes, 500) || 'not specified'}
       - Allergies: ${line(userData?.allergies, 300)}
+      - Meals per day: ${mealsPerDay(userData)}
 
       ${lastWeek ? `This plan is for the NEXT week. Last week the user completed ${line(previous.completed, 3)} of ${line(previous.planned, 3)} planned workouts:
       ${lastWeek}
@@ -141,7 +183,7 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
             {
               "day": 1,
               "meals": [
-                { "meal": "Breakfast", "options": ["Oatmeal with berries", "Greek yogurt"], "calories": 400, "protein": "20g", "carbs": "50g", "fats": "10g" },
+                { "meal": "Breakfast", "options": ["Oatmeal with berries"], "calories": 400, "protein": "20g", "carbs": "50g", "fats": "10g" },
                 { "meal": "Lunch", "options": ["Grilled chicken salad"], "calories": 500, "protein": "40g", "carbs": "30g", "fats": "20g" },
                 { "meal": "Dinner", "options": ["Salmon with vegetables"], "calories": 600, "protein": "45g", "carbs": "40g", "fats": "25g" },
                 { "meal": "Snack", "options": ["Apple with almond butter"], "calories": 200, "protein": "5g", "carbs": "25g", "fats": "10g" }
@@ -164,6 +206,11 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
       "rest" is the rest between sets in seconds, and "demo" is the movement pattern
       it matches, one of: ${DEMO_KEYS.join(', ')}. Use "" unless the exercise is that movement or a close variation of it.
 
+      ${targets ? `Daily nutrition targets are already calculated, use exactly these in "calories" and "macros": ${targets.calories} kcal, protein ${targets.protein}g, carbs ${targets.carbs}g, fats ${targets.fats}g.` : ''}
+      ${nutritionRules(userData)}
+
+      In "tips" give 4-5 short practical tips for THIS user from the dietitian and the coach: water (about 30-35 ml per kg of body weight a day), sleep, how to batch-cook the repeated dishes of this week, and what to eat around the workouts.
+
       Days do not need the same calories: training days may be higher and rest days lower,
       as long as the weekly average stays close to "calories". Each meal's numbers must be realistic for that meal.
     `
@@ -172,6 +219,10 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
   const plan = parseJson(await generateWithFallback(prompt, false))
   if (!Array.isArray(plan?.workoutPlan) || !plan?.mealPlan) {
     throw new Error('Gemini returned a plan with an unexpected structure')
+  }
+  if (targets) {
+    plan.mealPlan.calories = targets.calories
+    plan.mealPlan.macros = { protein: `${targets.protein}g`, carbs: `${targets.carbs}g`, fats: `${targets.fats}g` }
   }
   return plan
 }
@@ -200,7 +251,9 @@ export async function chatFromAI(options: {
         `Equipment: ${list(userData.equipmentAccess) || 'N/A'}`,
         `Training wishes and limitations: ${line(userData.trainingNotes, 500) || 'none'}`,
         `Diet: ${list(userData.dietPreferences) || 'N/A'}`,
+        `Foods and dishes the user likes: ${line(userData.foodNotes, 500) || 'not specified'}`,
         `Allergies: ${line(userData.allergies, 300) || 'none'}`,
+        `Meals per day: ${mealsPerDay(userData)}`,
       ].join('; ')
     : 'unknown'
 
@@ -210,7 +263,7 @@ export async function chatFromAI(options: {
     .map((turn) => `${turn?.role === 'user' ? 'User' : 'Coach'}: ${String(turn?.content || '').slice(0, 2000)}`)
     .join('\n')
 
-  const prompt = `You are an expert AI fitness and nutrition coach inside the Rovix app. You give helpful, accurate, motivating advice about training, nutrition, weight management and healthy habits. Be friendly and practical. If you don't know something, say so rather than guessing.
+  const prompt = `You are an expert fitness coach, sports dietitian and nutritionist inside the Rovix app. You give helpful, accurate, motivating advice about training, nutrition, weight management and healthy habits. Be friendly and practical. If you don't know something, say so rather than guessing.
 
 You can also EDIT the user's saved 7-day plan when they ask for it.
 
@@ -247,6 +300,10 @@ Rules for "changes":
 - "demo" is the movement pattern the exercise matches, one of: ${DEMO_KEYS.join(', ')}. Use "" unless the exercise is that movement or a close variation of it.
 - Write exercise names, meal names, options, focus and notes in the same language the current plan uses.
 - Respect the user's equipment, training wishes, diet and allergies. Days may differ in calories (more on training days, less on rest days) as long as the weekly average stays close to the target, unless the user asks otherwise.
+- Rules for every meal you add or change (untouched meals stay exactly as they are):
+      ${nutritionRules(userData)}
+- When the user names their own dish, use exactly that dish even if it is not a typical diet food: choose a portion in grams that fits the meal's calories and estimate its calories and macros honestly.
+- Change "mealTargets" only when the user asks to change the targets.
 - If the request is unclear (for example, which day), ask a short question in "reply" and keep "changes" null.`
 
   const raw = await generateWithFallback(prompt, true)
@@ -338,6 +395,31 @@ Answer with a single JSON object: { "t": [ ...the ${texts.length} translated str
   const byOriginal = new Map(texts.map((original, i) => [original, String(translated[i] || original)]))
   for (const { holder, key } of slots) holder[key] = byOriginal.get(String(holder[key]).slice(0, 300)) ?? holder[key]
   return copy
+}
+
+export interface Recipe {
+  ingredients: string[]
+  steps: string[]
+}
+
+/** How to cook one dish of the plan; null when the model returned nothing usable. */
+export async function recipeFromAI(dish: string, locale: string): Promise<Recipe | null> {
+  const name = line(dish, 300).replace(/["`]/g, '')
+  if (!name) return null
+
+  const prompt = `Explain how to cook this dish for one person at home, the simplest usual way: "${name}".
+The amounts in brackets are the ready-to-eat portion; keep the portion that size.
+Write every text value in ${LANGUAGE_NAMES[locale] || 'English'}. Each step is one short sentence.
+
+Answer with a single JSON object:
+{
+  "ingredients": ["every ingredient with the raw amount to take, e.g. dry rice — 70 g"],
+  "steps": ["3-6 cooking steps"]
+}`
+
+  const parsed = parseJson(await generateWithFallback(prompt, true, true))
+  const recipe: Recipe = { ingredients: strings(parsed?.ingredients, 12), steps: strings(parsed?.steps, 8) }
+  return recipe.steps.length ? recipe : null
 }
 
 export interface ShoppingCategory {

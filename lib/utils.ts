@@ -55,27 +55,23 @@ export function calculateCalorieGoal(tdee: number, fitnessGoal: string): number 
   return tdee // Maintenance
 }
 
-export function calculateMacros(calories: number, fitnessGoal: string) {
-  let proteinRatio, carbRatio, fatRatio
+/** Grams of protein per kilogram of body weight: 1.5-2 g/kg covers training needs without overshooting. */
+export function proteinPerKg(fitnessGoal: string): number {
+  if (fitnessGoal === 'muscle_gain') return 1.8
+  // A deficit needs the upper end to keep muscle.
+  if (fitnessGoal === 'fat_loss' || fitnessGoal === 'weight_loss') return 2
+  return 1.6
+}
 
-  if (fitnessGoal === 'muscle_gain') {
-    proteinRatio = 0.3
-    carbRatio = 0.45
-    fatRatio = 0.25
-  } else if (fitnessGoal === 'fat_loss' || fitnessGoal === 'weight_loss') {
-    proteinRatio = 0.35
-    carbRatio = 0.35
-    fatRatio = 0.30
-  } else {
-    proteinRatio = 0.25
-    carbRatio = 0.45
-    fatRatio = 0.30
-  }
+export function calculateMacros(calories: number, fitnessGoal: string, weight: number) {
+  // Protein follows body weight, fat is a share of calories, carbs take what is left.
+  const protein = Math.round(Number(weight) * proteinPerKg(fitnessGoal))
+  const fats = Math.round((calories * (fitnessGoal === 'muscle_gain' ? 0.25 : 0.3)) / 9) // 9 calories per gram
 
   return {
-    protein: Math.round((calories * proteinRatio) / 4), // 4 calories per gram
-    carbs: Math.round((calories * carbRatio) / 4),
-    fats: Math.round((calories * fatRatio) / 9), // 9 calories per gram
+    protein,
+    carbs: Math.max(0, Math.round((calories - protein * 4 - fats * 9) / 4)), // 4 calories per gram
+    fats,
   }
 }
 
@@ -88,7 +84,7 @@ export function calculateUserMetrics(user: User): UserMetrics | null {
   const bmr = calculateBMR(user)
   const tdee = calculateTDEE(bmr, user.activityLevel)
   const calories = calculateCalorieGoal(tdee, user.fitnessGoal)
-  const macros = calculateMacros(calories, user.fitnessGoal)
+  const macros = calculateMacros(calories, user.fitnessGoal, user.weight)
 
   return {
     bmi,

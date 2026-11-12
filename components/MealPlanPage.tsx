@@ -19,6 +19,7 @@ import {
   Clock,
   X,
   Info,
+  Check,
 } from 'lucide-react'
 import Navbar from './ui/Navbar'
 import Card from './ui/Card'
@@ -26,9 +27,9 @@ import Button from './ui/Button'
 import PlanTranslator from './PlanTranslator'
 import ShoppingList from './ShoppingList'
 import { exportMealPlanPDF } from '@/lib/pdfExport'
-import { chatWithAI, generateFitnessPlan } from '@/lib/gemini'
+import { chatWithAI, generateFitnessPlan, getRecipe, type Recipe } from '@/lib/gemini'
 import { applyPlanChanges, getMealDays, mealKind } from '@/lib/plan'
-import { startNewWeek } from '@/lib/week'
+import { daysInto, setMealEaten, startNewWeek, weekOf } from '@/lib/week'
 
 export default function MealPlanPage() {
   const { userData, setUserData, loading: userLoading } = useUser()
@@ -40,13 +41,32 @@ export default function MealPlanPage() {
   const [selectedMeal, setSelectedMeal] = useState<any | null>(null)
   const [swapState, setSwapState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [showShopping, setShowShopping] = useState(false)
+  const [ownDish, setOwnDish] = useState('')
+  const [recipe, setRecipe] = useState<{ dish: string; data?: Recipe | null } | null>(null)
 
-  // Asks the coach for a different dish in place of the open meal and applies it to that day only.
-  const swapMeal = async () => {
+  const openMeal = (meal: any | null) => {
+    setSelectedMeal(meal)
+    setSwapState('idle')
+    setOwnDish('')
+    setRecipe(null)
+  }
+
+  const showRecipe = async (dish: string) => {
+    setRecipe({ dish })
+    const data = await getRecipe(dish, locale)
+    // Ignore the answer if another dish was opened meanwhile.
+    setRecipe((current) => (current?.dish === dish ? { dish, data } : current))
+  }
+
+  // Asks the coach for a different dish (or the user's own one) in place of the open meal and applies it to that day only.
+  const swapMeal = async (own?: string) => {
     if (!selectedMeal || !selectedDay || !userData?.plan) return
     setSwapState('loading')
+    const replacement = own
+      ? `the user's own dish: "${own.replace(/["\n]/g, ' ')}". Keep it the dish the user named, choose a portion in grams that fits about ${selectedMeal.calories || 'the same'} kcal and estimate its real calories and macros; give it as the only option`
+      : 'a different dish of similar calories and macros'
     const result = await chatWithAI({
-      message: `In the meal plan, replace the meal "${selectedMeal.meal}" on day ${selectedDay} with a different dish of similar calories and macros. Change only that meal and keep the other meals of that day exactly as they are.`,
+      message: `In the meal plan, replace the meal "${selectedMeal.meal}" on day ${selectedDay} with ${replacement}. Change only that meal and keep the other meals of that day exactly as they are.`,
       userData,
       locale,
     })
@@ -56,9 +76,14 @@ export default function MealPlanPage() {
       return
     }
     setUserData((current: any) => ({ ...current, plan: applyPlanChanges(current.plan, { mealDays }).plan }))
-    setSwapState('idle')
-    setSelectedMeal(null)
+    openMeal(null)
   }
+
+  const week = weekOf(userData)
+  const today = daysInto(week) + 1
+
+  const proteinTarget = parseFloat(userData?.plan?.mealPlan?.macros?.protein) || 0
+  const proteinPerKg = proteinTarget && Number(userData?.weight) > 0 ? (proteinTarget / Number(userData.weight)).toFixed(1) : null
 
   // Plans saved in the old one-day format are repeated across the week.
   const mealPlans = useMemo(() => getMealDays(userData?.plan?.mealPlan, true), [userData?.plan?.mealPlan])
@@ -212,6 +237,7 @@ export default function MealPlanPage() {
               <div>
                 <p className="text-sm opacity-90 mb-1">{t('protein')}</p>
                 <p className="text-2xl font-bold">{userData.plan?.mealPlan?.macros?.protein || '0g'}</p>
+                {proteinPerKg && <p className="text-xs opacity-90">{t('perKg', { value: proteinPerKg })}</p>}
               </div>
               <div>
                 <p className="text-sm opacity-90 mb-1">{t('carbs')}</p>
@@ -251,6 +277,7 @@ export default function MealPlanPage() {
                     <h3 className="font-bold text-lg">{getDayName(dayNumber)}</h3>
                     <p className="text-sm text-gray-500">
                       {t('day')} {dayNumber}
+                      {dayNumber === today && <span className="font-semibold text-fitness-orange"> · {t('today')}</span>}
                       {plan.totalCalories > 0 && <> · {plan.totalCalories} {t('cal')}</>}
                     </p>
                   </div>
@@ -326,14 +353,36 @@ export default function MealPlanPage() {
                     )
                   }
                   
-                  return meals.map((meal: any, index: number) => (
+                  const eaten = week.eatenMeals[selectedDay] || []
+                  const eatenSum = (pick: (meal: any) => unknown) =>
+                    Math.round(meals.reduce((sum: number, meal: any, i: number) => sum + (eaten.includes(i) ? parseFloat(String(pick(meal))) || 0 : 0), 0))
+                  const dayCalories = dayPlan?.totalCalories || 0
+
+                  return [
+                  <div key="eaten" className="md:col-span-2">
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                      {t('eatenProgress', {
+                        kcal: eatenSum((meal) => meal.calories),
+                        total: dayCalories,
+                        protein: eatenSum((meal) => meal.protein),
+                        proteinTotal: parseFloat(dayPlan?.totalProtein || '') || 0,
+                      })}
+                    </p>
+                    <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-fitness-orange to-fitness-purple transition-all"
+                        style={{ width: `${dayCalories ? Math.min(100, (eatenSum((meal) => meal.calories) / dayCalories) * 100) : 0}%` }}
+                      />
+                    </div>
+                  </div>,
+                  ...meals.map((meal: any, index: number) => (
                   <motion.div
                     key={index}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.1 }}
                   >
-                    <Card className="h-full cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setSelectedMeal(meal)}>
+                    <Card className="h-full cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openMeal(meal)}>
                       <div className="flex items-center gap-3 mb-4">
                         <div className="w-10 h-10 rounded-full bg-gradient-to-r from-fitness-orange to-fitness-purple flex items-center justify-center">
                           {getMealIcon(meal.meal || meal.name || 'meal')}
@@ -345,6 +394,24 @@ export default function MealPlanPage() {
                             {t('viewDetails')}
                           </button>
                         </div>
+                        <button
+                          type="button"
+                          aria-pressed={eaten.includes(index)}
+                          aria-label={t('markEaten')}
+                          title={t('markEaten')}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setUserData((current: any) => setMealEaten(current, selectedDay, index, !eaten.includes(index)))
+                          }}
+                          className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                            eaten.includes(index)
+                              ? 'bg-green-600 border-green-600 text-white'
+                              : 'border-gray-300 text-gray-600 hover:border-green-500 dark:text-gray-300'
+                          }`}
+                        >
+                          <Check className="w-4 h-4" />
+                          {eaten.includes(index) && t('eaten')}
+                        </button>
                       </div>
 
                       <div className="space-y-3">
@@ -403,7 +470,8 @@ export default function MealPlanPage() {
                       </div>
                     </Card>
                   </motion.div>
-                  ))
+                  )),
+                  ]
                 })()}
               </div>
             </Card>
@@ -419,7 +487,7 @@ export default function MealPlanPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-            onClick={() => setSelectedMeal(null)}
+            onClick={() => openMeal(null)}
           >
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
@@ -440,7 +508,7 @@ export default function MealPlanPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setSelectedMeal(null)}
+                    onClick={() => openMeal(null)}
                     className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                   >
                     <X className="w-6 h-6" />
@@ -455,12 +523,16 @@ export default function MealPlanPage() {
                       <div className="flex flex-wrap gap-2">
                         {selectedMeal.options && selectedMeal.options.length > 0 ? (
                           selectedMeal.options.map((option: string, optIndex: number) => (
-                            <span
+                            <button
                               key={optIndex}
-                              className="px-4 py-2 bg-orange-100 dark:bg-orange-900/20 text-orange-800 dark:text-orange-200 rounded-full text-sm font-medium"
+                              type="button"
+                              onClick={() => showRecipe(option)}
+                              className={`px-4 py-2 bg-orange-100 dark:bg-orange-900/20 text-orange-800 dark:text-orange-200 rounded-2xl text-sm font-medium text-left hover:ring-2 hover:ring-fitness-orange ${
+                                recipe?.dish === option ? 'ring-2 ring-fitness-orange' : ''
+                              }`}
                             >
                               {option}
-                            </span>
+                            </button>
                           ))
                         ) : (
                           <span className="px-4 py-2 bg-orange-100 dark:bg-orange-900/20 text-orange-800 dark:text-orange-200 rounded-full text-sm font-medium">
@@ -468,6 +540,27 @@ export default function MealPlanPage() {
                           </span>
                         )}
                       </div>
+                      {selectedMeal.options?.length > 0 && !recipe && (
+                        <p className="mt-2 text-xs text-gray-500">{t('tapRecipe')}</p>
+                      )}
+                      {recipe && recipe.data === undefined && <p className="mt-3 text-sm text-gray-500">{t('recipeLoading')}</p>}
+                      {recipe && recipe.data === null && <p className="mt-3 text-sm text-red-600">{t('recipeError')}</p>}
+                      {recipe?.data && (
+                        <div className="mt-4 space-y-3 text-gray-700 dark:text-gray-300">
+                          <div>
+                            <h4 className="font-semibold mb-1">{t('ingredients')}</h4>
+                            <ul className="list-disc list-inside space-y-1 text-sm">
+                              {recipe.data.ingredients.map((item, i) => <li key={i}>{item}</li>)}
+                            </ul>
+                          </div>
+                          <div>
+                            <h4 className="font-semibold mb-1">{t('instructions')}</h4>
+                            <ol className="list-decimal list-inside space-y-1 text-sm">
+                              {recipe.data.steps.map((step, i) => <li key={i}>{step}</li>)}
+                            </ol>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : null}
 
@@ -509,10 +602,32 @@ export default function MealPlanPage() {
 
                   {selectedDay && (
                     <div>
-                      <Button variant="outline" onClick={swapMeal} isLoading={swapState === 'loading'} className="w-full">
+                      <Button variant="outline" onClick={() => swapMeal()} isLoading={swapState === 'loading'} className="w-full">
                         <RefreshCw className="w-4 h-4 mr-2" />
                         {t('swap')}
                       </Button>
+                      <form
+                        className="mt-4"
+                        onSubmit={(e) => {
+                          e.preventDefault()
+                          if (ownDish.trim() && swapState !== 'loading') swapMeal(ownDish.trim())
+                        }}
+                      >
+                        <label className="block text-sm font-semibold mb-2">{t('own')}</label>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            value={ownDish}
+                            onChange={(e) => setOwnDish(e.target.value)}
+                            maxLength={150}
+                            placeholder={t('ownPlaceholder')}
+                            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-fitness-orange focus:border-transparent dark:bg-gray-700 dark:border-gray-600"
+                          />
+                          <Button type="submit" disabled={!ownDish.trim() || swapState === 'loading'}>
+                            {t('ownApply')}
+                          </Button>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-500">{t('ownHint')}</p>
+                      </form>
                       {swapState === 'error' && <p className="mt-2 text-sm text-red-600">{t('swapError')}</p>}
                     </div>
                   )}

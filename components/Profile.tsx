@@ -81,7 +81,7 @@ export default function Profile() {
     return bmi.toFixed(1)
   }
 
-  const noteField = (field: 'allergies' | 'trainingNotes', placeholder: string) => (
+  const noteField = (field: 'allergies' | 'trainingNotes' | 'foodNotes', placeholder: string) => (
     <textarea
       value={editedData[field] || ''}
       onChange={(e) => setEditedData({ ...editedData, [field]: e.target.value })}
@@ -383,6 +383,42 @@ export default function Profile() {
                     </div>
                   )}
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    {t('mealsPerDay')}
+                  </label>
+                  {isEditing ? (
+                    <div className="flex gap-2">
+                      {[3, 4, 5].map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          onClick={() => setEditedData({ ...editedData, mealsPerDay: count })}
+                          aria-pressed={(Number(editedData.mealsPerDay) || 4) === count}
+                          className={`w-10 h-10 rounded-full text-sm border transition-colors ${
+                            (Number(editedData.mealsPerDay) || 4) === count ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 text-gray-700 hover:border-blue-400'
+                          }`}
+                        >
+                          {count}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-gray-900 dark:text-gray-100 font-medium">{Number(userData.mealsPerDay) || 4}</p>
+                  )}
+                </div>
+                {(isEditing || userData.foodNotes) && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      {t('foodNotes')}
+                    </label>
+                    {isEditing ? (
+                      noteField('foodNotes', tOnboarding('preferences.foodNotesPlaceholder'))
+                    ) : (
+                      <p className="text-gray-900 dark:text-gray-100">{userData.foodNotes}</p>
+                    )}
+                  </div>
+                )}
                 {(isEditing || userData.allergies) && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">

@@ -144,6 +144,22 @@ export async function explainExercise(name: string, locale: string = "en"): Prom
   }
 }
 
+export interface Recipe {
+  ingredients: string[];
+  steps: string[];
+}
+
+/** How to cook one dish of the plan; null when it could not be written. */
+export async function getRecipe(dish: string, locale: string): Promise<Recipe | null> {
+  try {
+    const { recipe } = await callAI<{ recipe: Recipe }>({ action: "recipe", dish, locale });
+    return Array.isArray(recipe?.steps) && recipe.steps.length ? recipe : null;
+  } catch (error) {
+    console.error("Error getting the recipe:", error);
+    return null;
+  }
+}
+
 /** The same plan with its texts in another language; null when the translation failed. */
 export async function translatePlan(plan: any, locale: string): Promise<any | null> {
   try {
