@@ -44,6 +44,7 @@ const PROFILE_FIELDS = [
   'dietPreferences',
   'foodNotes',
   'mealsPerDay',
+  'calorieAdjust',
   'allergies',
 ] as const
 

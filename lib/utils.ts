@@ -83,7 +83,8 @@ export function calculateUserMetrics(user: User): UserMetrics | null {
   const bmi = calculateBMI(user.height, user.weight)
   const bmr = calculateBMR(user)
   const tdee = calculateTDEE(bmr, user.activityLevel)
-  const calories = calculateCalorieGoal(tdee, user.fitnessGoal)
+  // calorieAdjust is the correction the user accepted on the progress page (see calorieAdvice).
+  const calories = calculateCalorieGoal(tdee, user.fitnessGoal) + (Number(user.calorieAdjust) || 0)
   const macros = calculateMacros(calories, user.fitnessGoal, user.weight)
 
   return {
@@ -95,3 +96,44 @@ export function calculateUserMetrics(user: User): UserMetrics | null {
   }
 }
 
+
+const ADJUST_STEP = 150
+const ADJUST_LIMIT = 450
+const ADJUST_MIN_DAYS = 10
+
+export interface CalorieAdvice {
+  delta: number // kcal per day to add (positive) or remove (negative)
+  days: number
+  change: number // kg over those days
+}
+
+/**
+ * Compares the logged weight trend with what the goal needs and suggests a small calorie correction,
+ * the way a coach would after a couple of weeks. Null when the trend is fine or there is too little data.
+ */
+export function calorieAdvice(userData: any): CalorieAdvice | null {
+  const since = String(userData?.calorieAdjustedAt || '')
+  const from = new Date()
+  from.setDate(from.getDate() - 28)
+  const fromKey = toDateKey(from)
+  const weights = ((userData?.progress || []) as any[])
+    .filter((entry) => Number(entry?.weight) > 0 && entry.date >= fromKey && entry.date > since)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+  if (weights.length < 2) return null
+
+  const first = weights[0]
+  const last = weights[weights.length - 1]
+  const days = Math.round((new Date(`${last.date}T00:00:00`).getTime() - new Date(`${first.date}T00:00:00`).getTime()) / 86400000)
+  if (days < ADJUST_MIN_DAYS) return null
+
+  const change = Number(last.weight) - Number(first.weight)
+  const perWeek = ((change / Number(first.weight)) * 100 * 7) / days // % of body weight per week
+  const goal = String(userData?.fitnessGoal || '')
+  // Healthy pace: losing 0.25-1% a week, gaining 0.1-0.5% a week, otherwise staying within 0.5%.
+  const [low, high] =
+    goal === 'fat_loss' || goal === 'weight_loss' ? [-1, -0.25] : goal === 'muscle_gain' ? [0.1, 0.5] : [-0.5, 0.5]
+  const delta = perWeek > high ? -ADJUST_STEP : perWeek < low ? ADJUST_STEP : 0
+  const total = (Number(userData?.calorieAdjust) || 0) + delta
+  if (!delta || Math.abs(total) > ADJUST_LIMIT) return null
+  return { delta, days, change: Math.round(change * 10) / 10 }
+}

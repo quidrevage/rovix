@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { aiConfigured, chatFromAI, guideFromAI, planFromAI, recipeFromAI, shoppingFromAI, translatePlanWithAI } from '@/lib/aiServer'
+import { aiConfigured, chatFromAI, foodFromAI, guideFromAI, planFromAI, recipeFromAI, shoppingFromAI, translatePlanWithAI } from '@/lib/aiServer'
 
 // The only place the browser can reach Gemini through. The key stays on the server;
 // the browser sends what it wants done (plan / chat / guide) and the prompts are built here.
@@ -81,6 +81,12 @@ export async function POST(request: Request) {
         if (typeof body.name !== 'string' || !body.name.trim()) return fail('bad_request', 400)
         const guide = await guideFromAI(body.name, locale)
         return guide ? NextResponse.json({ guide }) : fail('ai_failed', 502)
+      }
+
+      case 'food': {
+        if (typeof body.text !== 'string' || !body.text.trim()) return fail('bad_request', 400)
+        const food = await foodFromAI(body.text, locale)
+        return food ? NextResponse.json({ food }) : fail('ai_failed', 502)
       }
 
       case 'recipe': {

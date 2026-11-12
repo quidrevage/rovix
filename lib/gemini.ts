@@ -144,6 +144,25 @@ export async function explainExercise(name: string, locale: string = "en"): Prom
   }
 }
 
+export interface FoodEstimate {
+  name: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fats: number;
+}
+
+/** Calories and macros of food eaten outside the plan; null when it could not be estimated. */
+export async function estimateFood(text: string, locale: string): Promise<FoodEstimate | null> {
+  try {
+    const { food } = await callAI<{ food: FoodEstimate }>({ action: "food", text, locale });
+    return food?.calories > 0 ? food : null;
+  } catch (error) {
+    console.error("Error estimating the food:", error);
+    return null;
+  }
+}
+
 export interface Recipe {
   ingredients: string[];
   steps: string[];

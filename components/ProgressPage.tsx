@@ -3,26 +3,17 @@
 import React, { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { TrendingUp, TrendingDown, Target, Weight, Activity, BarChart3, Plus } from 'lucide-react'
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts'
+import dynamic from 'next/dynamic'
 import { useLocale, useTranslations } from 'next-intl'
 import { useRouter } from 'next/navigation'
 import { useUser } from '@/context/UserContext'
-import { calculateUserMetrics } from '@/lib/utils'
+import { calculateUserMetrics, calorieAdvice, toDateKey } from '@/lib/utils'
 import { GOAL_KEYS } from '@/lib/options'
 import Card from './ui/Card'
 import Navbar from './ui/Navbar'
 import Button from './ui/Button'
+
+const ProgressChart = dynamic(() => import('./ProgressChart'), { ssr: false, loading: () => <div className="h-[300px]" /> })
 
 interface ProgressEntry {
   date: string // YYYY-MM-DD
@@ -94,6 +85,10 @@ export default function ProgressPage() {
   }
 
   const metrics = calculateUserMetrics(userData)
+  const advice = calorieAdvice(userData)
+  const calorieAdjust = Number(userData.calorieAdjust) || 0
+  const setCalorieAdjust = (value: number) =>
+    setUserData({ ...userData, calorieAdjust: value, calorieAdjustedAt: toDateKey() })
 
   const weights = currentData.filter((d) => d.weight !== undefined).map((d) => d.weight as number)
   const calorieDays = currentData.filter((d) => d.calories !== undefined)
@@ -139,6 +134,38 @@ export default function ProgressPage() {
           <h1 className="text-4xl font-bold mb-2">{t('title')}</h1>
           <p className="text-gray-600">{t('description')}</p>
         </motion.div>
+
+        {(advice || calorieAdjust !== 0) && (
+          <Card className="mb-6 border-l-4 border-fitness-orange">
+            <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
+              <Target className="w-5 h-5 text-fitness-orange" />
+              {t('adjust.title')}
+            </h3>
+            {advice && (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <p className="flex-1 text-gray-700">
+                  {t(advice.delta > 0 ? 'adjust.more' : 'adjust.less', {
+                    days: advice.days,
+                    change: `${advice.change > 0 ? '+' : ''}${advice.change}`,
+                    kcal: Math.abs(advice.delta),
+                  })}
+                </p>
+                <Button size="sm" onClick={() => setCalorieAdjust(calorieAdjust + advice.delta)}>
+                  {t('adjust.apply')}
+                </Button>
+              </div>
+            )}
+            {calorieAdjust !== 0 && (
+              <p className="mt-2 text-sm text-gray-500">
+                {t('adjust.current', { value: `${calorieAdjust > 0 ? '+' : ''}${calorieAdjust}` })}{' '}
+                <button type="button" className="underline hover:text-fitness-orange" onClick={() => setCalorieAdjust(0)}>
+                  {t('adjust.reset')}
+                </button>
+              </p>
+            )}
+            <p className="mt-2 text-xs text-gray-500">{t('adjust.hint')}</p>
+          </Card>
+        )}
 
         {/* Daily log */}
         <Card className="mb-6">
@@ -258,16 +285,7 @@ export default function ProgressPage() {
               {t('charts.weightProgress')}
             </h3>
             {weights.length === 0 ? noData : (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={currentData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" />
-                  <YAxis domain={['auto', 'auto']} />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="weight" connectNulls stroke="#ff6b35" strokeWidth={2} name={t('charts.weight')} />
-                </LineChart>
-              </ResponsiveContainer>
+              <ProgressChart kind="line" data={currentData} dataKey="weight" color="#ff6b35" name={t('charts.weight')} />
             )}
           </Card>
 
@@ -277,16 +295,7 @@ export default function ProgressPage() {
               {t('charts.dailyCalories')}
             </h3>
             {calorieDays.length === 0 ? noData : (
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={currentData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="calories" fill="#10b981" name={t('charts.calories')} />
-                </BarChart>
-              </ResponsiveContainer>
+              <ProgressChart kind="bar" data={currentData} dataKey="calories" color="#10b981" name={t('charts.calories')} />
             )}
           </Card>
         </div>
@@ -297,16 +306,7 @@ export default function ProgressPage() {
             {t('charts.workoutFrequency')}
           </h3>
           {stats.workoutsCompleted === 0 ? noData : (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={currentData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="workouts" fill="#9b59b6" name={t('charts.workoutsPerDay')} />
-              </BarChart>
-            </ResponsiveContainer>
+            <ProgressChart kind="bar" data={currentData} dataKey="workouts" color="#9b59b6" name={t('charts.workoutsPerDay')} wholeNumbers />
           )}
         </Card>
 

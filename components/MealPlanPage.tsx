@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { useUser } from '@/context/UserContext'
 import { useTranslations, useLocale } from 'next-intl'
 import { useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import {
   Calendar,
   UtensilsCrossed,
@@ -20,16 +21,18 @@ import {
   X,
   Info,
   Check,
+  Heart,
+  Plus,
 } from 'lucide-react'
 import Navbar from './ui/Navbar'
 import Card from './ui/Card'
 import Button from './ui/Button'
 import PlanTranslator from './PlanTranslator'
-import ShoppingList from './ShoppingList'
-import { exportMealPlanPDF } from '@/lib/pdfExport'
-import { chatWithAI, generateFitnessPlan, getRecipe, type Recipe } from '@/lib/gemini'
+import { chatWithAI, estimateFood, generateFitnessPlan, getRecipe, type Recipe } from '@/lib/gemini'
 import { applyPlanChanges, getMealDays, mealKind } from '@/lib/plan'
-import { daysInto, setMealEaten, startNewWeek, weekOf } from '@/lib/week'
+import { daysInto, setExtraFood, setMealEaten, startNewWeek, weekOf, type ExtraFood } from '@/lib/week'
+
+const ShoppingList = dynamic(() => import('./ShoppingList'), { ssr: false })
 
 export default function MealPlanPage() {
   const { userData, setUserData, loading: userLoading } = useUser()
@@ -43,6 +46,31 @@ export default function MealPlanPage() {
   const [showShopping, setShowShopping] = useState(false)
   const [ownDish, setOwnDish] = useState('')
   const [recipe, setRecipe] = useState<{ dish: string; data?: Recipe | null } | null>(null)
+
+  const [extraText, setExtraText] = useState('')
+  const [extraState, setExtraState] = useState<'idle' | 'loading' | 'error'>('idle')
+
+  // Food eaten outside the plan: described in words, counted into the day's progress.
+  const addExtraFood = async (day: number) => {
+    const text = extraText.trim()
+    if (!text || extraState === 'loading') return
+    setExtraState('loading')
+    const food = await estimateFood(text, locale)
+    if (!food) {
+      setExtraState('error')
+      return
+    }
+    setUserData((current: any) => setExtraFood(current, day, food))
+    setExtraText('')
+    setExtraState('idle')
+  }
+
+  const favorites: string[] = userData?.favoriteDishes || []
+  const toggleFavorite = (dish: string) =>
+    setUserData((current: any) => {
+      const list: string[] = current.favoriteDishes || []
+      return { ...current, favoriteDishes: list.includes(dish) ? list.filter((item) => item !== dish) : [...list, dish].slice(-30) }
+    })
 
   const openMeal = (meal: any | null) => {
     setSelectedMeal(meal)
@@ -99,6 +127,8 @@ export default function MealPlanPage() {
 
   const handleExportPDF = async () => {
     try {
+      // The PDF library is large, so it is downloaded only when an export is asked for.
+      const { exportMealPlanPDF } = await import('@/lib/pdfExport')
       await exportMealPlanPDF(userData, mealPlans, locale)
     } catch (error) {
       console.error('Error exporting PDF:', error)
@@ -354,8 +384,12 @@ export default function MealPlanPage() {
                   }
                   
                   const eaten = week.eatenMeals[selectedDay] || []
+                  const extras: ExtraFood[] = week.extraFood[selectedDay] || []
                   const eatenSum = (pick: (meal: any) => unknown) =>
-                    Math.round(meals.reduce((sum: number, meal: any, i: number) => sum + (eaten.includes(i) ? parseFloat(String(pick(meal))) || 0 : 0), 0))
+                    Math.round(
+                      meals.reduce((sum: number, meal: any, i: number) => sum + (eaten.includes(i) ? parseFloat(String(pick(meal))) || 0 : 0), 0) +
+                        extras.reduce((sum, food) => sum + (Number(pick(food)) || 0), 0)
+                    )
                   const dayCalories = dayPlan?.totalCalories || 0
 
                   return [
@@ -374,6 +408,43 @@ export default function MealPlanPage() {
                         style={{ width: `${dayCalories ? Math.min(100, (eatenSum((meal) => meal.calories) / dayCalories) * 100) : 0}%` }}
                       />
                     </div>
+                    {extras.length > 0 && (
+                      <ul className="mt-3 flex flex-wrap gap-2">
+                        {extras.map((food, i) => (
+                          <li key={i} className="flex items-center gap-2 px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-700 text-sm">
+                            {food.name} · {food.calories} {t('cal')}
+                            <button
+                              type="button"
+                              aria-label={t('extra.remove')}
+                              onClick={() => setUserData((current: any) => setExtraFood(current, selectedDay, i))}
+                              className="text-gray-400 hover:text-red-600"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <form
+                      className="mt-3 flex flex-col sm:flex-row gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        addExtraFood(selectedDay)
+                      }}
+                    >
+                      <input
+                        value={extraText}
+                        onChange={(e) => setExtraText(e.target.value)}
+                        maxLength={200}
+                        placeholder={t('extra.placeholder')}
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-fitness-orange focus:border-transparent dark:bg-gray-700 dark:border-gray-600"
+                      />
+                      <Button type="submit" variant="outline" size="sm" isLoading={extraState === 'loading'} disabled={!extraText.trim()}>
+                        <Plus className="w-4 h-4 mr-1" />
+                        {t('extra.add')}
+                      </Button>
+                    </form>
+                    {extraState === 'error' && <p className="mt-2 text-sm text-red-600">{t('extra.error')}</p>}
                   </div>,
                   ...meals.map((meal: any, index: number) => (
                   <motion.div
@@ -543,6 +614,17 @@ export default function MealPlanPage() {
                       {selectedMeal.options?.length > 0 && !recipe && (
                         <p className="mt-2 text-xs text-gray-500">{t('tapRecipe')}</p>
                       )}
+                      {selectedMeal.options?.[0] && (
+                        <button
+                          type="button"
+                          onClick={() => toggleFavorite(selectedMeal.options[0])}
+                          aria-pressed={favorites.includes(selectedMeal.options[0])}
+                          className="mt-3 flex items-center gap-2 text-sm text-gray-600 hover:text-fitness-orange dark:text-gray-300"
+                        >
+                          <Heart className={`w-4 h-4 ${favorites.includes(selectedMeal.options[0]) ? 'fill-fitness-orange text-fitness-orange' : ''}`} />
+                          {t(favorites.includes(selectedMeal.options[0]) ? 'favorite.saved' : 'favorite.save')}
+                        </button>
+                      )}
                       {recipe && recipe.data === undefined && <p className="mt-3 text-sm text-gray-500">{t('recipeLoading')}</p>}
                       {recipe && recipe.data === null && <p className="mt-3 text-sm text-red-600">{t('recipeError')}</p>}
                       {recipe?.data && (
@@ -627,6 +709,25 @@ export default function MealPlanPage() {
                           </Button>
                         </div>
                         <p className="mt-1 text-xs text-gray-500">{t('ownHint')}</p>
+                        {favorites.length > 0 && (
+                          <div className="mt-3">
+                            <p className="text-sm font-semibold mb-2">{t('favorite.title')}</p>
+                            <div className="flex flex-wrap gap-2">
+                              {favorites.map((dish) => (
+                                <button
+                                  key={dish}
+                                  type="button"
+                                  title={dish}
+                                  disabled={swapState === 'loading'}
+                                  onClick={() => swapMeal(dish)}
+                                  className="px-3 py-1 rounded-full border border-gray-300 text-sm hover:border-fitness-orange disabled:opacity-50 dark:border-gray-600"
+                                >
+                                  {dish.split(' (')[0]}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </form>
                       {swapState === 'error' && <p className="mt-2 text-sm text-red-600">{t('swapError')}</p>}
                     </div>

@@ -12,6 +12,7 @@ export interface User {
   dietPreferences?: string[]
   allergies?: string[]
   trainingFrequency?: number // days per week
+  calorieAdjust?: number // kcal per day added to the calculated target
   createdAt: string
   updatedAt?: string
 }

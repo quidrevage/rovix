@@ -289,6 +289,15 @@
       "save": "Save Entry",
       "hint": "Saving the same date again replaces that entry."
     },
+    "adjust": {
+      "title": "Calorie adjustment",
+      "less": "Over {days} days your weight changed by {change} kg. For your goal, eat a little less: −{kcal} kcal a day.",
+      "more": "Over {days} days your weight changed by {change} kg. For your goal, eat a little more: +{kcal} kcal a day.",
+      "apply": "Apply",
+      "current": "Current adjustment: {value} kcal a day.",
+      "reset": "Reset",
+      "hint": "The new target is used the next time the plan is updated."
+    },
     "noData": "No entries for this period yet. Add your first one above.",
     "notSet": "Not set",
     "kcalPerDay": "kcal/day"
@@ -334,6 +343,17 @@
     "eaten": "Eaten",
     "markEaten": "Mark as eaten",
     "eatenProgress": "Eaten: {kcal} of {total} kcal · protein {protein} of {proteinTotal} g",
+    "extra": {
+      "placeholder": "Ate something off the plan? Type it: \"kebab wrap\", \"2 slices of pizza\"",
+      "add": "Add",
+      "error": "Couldn't estimate it. Try describing it differently.",
+      "remove": "Remove"
+    },
+    "favorite": {
+      "save": "Add to favourites",
+      "saved": "In favourites",
+      "title": "Favourite dishes — tap to put one here"
+    },
     "shopping": {
       "button": "Shopping list",
       "title": "Shopping list for the week",

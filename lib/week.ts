@@ -8,6 +8,15 @@ export interface WeekState {
   doneDays: Record<number, string> // plan day (1-7) -> date it was completed
   doneExercises: Record<number, number[]> // plan day -> indexes of finished exercises
   eatenMeals: Record<number, number[]> // plan day -> indexes of eaten meals
+  extraFood: Record<number, ExtraFood[]> // plan day -> food eaten outside the plan
+}
+
+export interface ExtraFood {
+  name: string
+  calories: number
+  protein: number
+  carbs: number
+  fats: number
 }
 
 export const WEEK_DAYS = 7
@@ -20,7 +29,16 @@ export function weekOf(userData: any): WeekState {
     doneDays: week?.doneDays || {},
     doneExercises: week?.doneExercises || {},
     eatenMeals: week?.eatenMeals || {},
+    extraFood: week?.extraFood || {},
   }
+}
+
+/** Adds food eaten outside the plan to a day, or removes one by its position (pass a number). */
+export function setExtraFood(userData: any, day: number, change: ExtraFood | number): any {
+  const week = weekOf(userData)
+  const current = week.extraFood[day] || []
+  const list = typeof change === 'number' ? current.filter((_, index) => index !== change) : [...current, change].slice(-20)
+  return { ...userData, week: { ...week, extraFood: { ...week.extraFood, [day]: list } } }
 }
 
 /** Ticks or unticks one meal of a plan day as eaten. */
@@ -85,7 +103,7 @@ export function startNewWeek(userData: any, plan?: any): any {
   return {
     ...userData,
     ...(plan ? { plan, createdAt: Date.now() } : {}),
-    week: { start: toDateKey(), doneDays: {}, doneExercises: {}, eatenMeals: {} },
+    week: { start: toDateKey(), doneDays: {}, doneExercises: {}, eatenMeals: {}, extraFood: {} },
   }
 }
 

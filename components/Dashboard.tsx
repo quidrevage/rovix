@@ -22,19 +22,21 @@ import {
   Shuffle,
 } from 'lucide-react'
 import { useLocale, useTranslations } from 'next-intl'
+import dynamic from 'next/dynamic'
 import { useRouter } from 'next/navigation'
 import Button from './ui/Button'
 import Card from './ui/Card'
 import Navbar from './ui/Navbar'
-import AICoach from './AICoach'
-import ExerciseModal from './ExerciseModal'
 import PlanTranslator from './PlanTranslator'
 import { useUser } from '@/context/UserContext'
 import { calculateUserMetrics } from '@/lib/utils'
-import { exportMealPlanPDF, exportWorkoutPlanPDF } from '@/lib/pdfExport'
 import { chatWithAI, generateFitnessPlan } from '@/lib/gemini'
 import { applyPlanChanges, compactPlan, getMealDays, getWorkoutDays, mealKind, type ExerciseView } from '@/lib/plan'
 import { WEEK_DAYS, clearExerciseMarks, daysInto, setDayDone, setExerciseDone, startNewWeek, weekOf } from '@/lib/week'
+
+// Not needed for the first paint: the chat, the exercise dialog and the PDF library load on their own.
+const AICoach = dynamic(() => import('./AICoach'), { ssr: false })
+const ExerciseModal = dynamic(() => import('./ExerciseModal'), { ssr: false })
 
 type Tab = 'meal' | 'workout' | 'coach'
 
@@ -117,6 +119,7 @@ export default function Dashboard() {
 
   const exportPDF = async () => {
     try {
+      const { exportMealPlanPDF, exportWorkoutPlanPDF } = await import('@/lib/pdfExport')
       if (activeTab === 'workout' && workoutPlans.length > 0) {
         await exportWorkoutPlanPDF(userData, workoutPlans, locale)
       } else if (activeTab !== 'workout' && mealPlans.length > 0) {

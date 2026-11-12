@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { DEMO_KEYS } from './exercises'
 import { compactPlan, sanitizeChanges } from './plan'
 import { detectLanguage, type ChatResult, type ChatTurn, type ExerciseGuide } from './aiShared'
-import { calculateUserMetrics, proteinPerKg } from './utils'
+import { calculateMacros, calculateUserMetrics, proteinPerKg } from './utils'
 
 // Everything that talks to Gemini lives here and runs only on the server (see app/api/ai/route.ts),
 // so the API key never reaches the browser.
@@ -72,6 +72,62 @@ async function generateWithFallback(prompt: string, interactive: boolean, prefer
   throw lastError
 }
 
+// How long the plan waits for a model before asking the next one as well.
+const HEDGE_MS = 25 * 1000
+
+/**
+ * For the plan: the main model sometimes stalls for minutes, so instead of waiting for it to fail,
+ * the next model is started alongside after HEDGE_MS (or at once if a model fails) and the first answer wins.
+ */
+function generateHedged(prompt: string): Promise<string> {
+  const now = Date.now()
+  const cooling = (model: string) => (coolingUntil[model] || 0) > now
+  const models = [...PLAN_MODELS.filter((model) => !cooling(model)), ...PLAN_MODELS.filter(cooling)]
+  // Little reasoning is needed to fill a template, and it roughly halves the wait.
+  const generationConfig: any = { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } }
+
+  return new Promise((resolve, reject) => {
+    let next = 0
+    let running = 0
+    let done = false
+    let lastError: unknown
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const launch = () => {
+      if (done || next >= models.length) return
+      const model = models[next++]
+      running++
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        // Still silent: remember that it is slow right now, and bring in the next model.
+        coolingUntil[model] = Date.now() + COOLDOWN_MS
+        launch()
+      }, HEDGE_MS)
+      genAI
+        .getGenerativeModel({ model, generationConfig }, { timeout: PLAN_TIMEOUT_MS })
+        .generateContent(prompt)
+        .then((result) => {
+          if (done) return
+          done = true
+          clearTimeout(timer)
+          resolve(result.response.text())
+        })
+        .catch((error) => {
+          lastError = error
+          running--
+          if (done) return
+          if (/\b(503|429)\b|abort|timed? ?out/i.test(String(error))) coolingUntil[model] = Date.now() + COOLDOWN_MS
+          if (next < models.length) launch()
+          else if (running === 0) {
+            clearTimeout(timer)
+            reject(lastError)
+          }
+        })
+    }
+    launch()
+  })
+}
+
 // The model sometimes wraps JSON in a code fence or adds a sentence around it.
 function parseJson(raw: string): any {
   try {
@@ -132,16 +188,102 @@ function nutritionRules(userData: any): string {
       - Write the units in the language of the plan (for example "г", "мл", "шт." in Russian and Ukrainian).`
 }
 
+// Usual training days (1-7) for a weekly frequency, so the workouts and the meals agree without seeing each other.
+const TRAINING_DAYS: Record<number, number[]> = {
+  1: [3],
+  2: [1, 4],
+  3: [1, 3, 5],
+  4: [1, 2, 4, 5],
+  5: [1, 2, 3, 5, 6],
+  6: [1, 2, 3, 4, 5, 6],
+}
+
+type Slot = 'breakfast' | 'lunch' | 'dinner' | 'snack'
+
+const SLOT_NAMES: Record<string, Record<Slot, string>> = {
+  en: { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', snack: 'Snack' },
+  uk: { breakfast: 'Сніданок', lunch: 'Обід', dinner: 'Вечеря', snack: 'Перекус' },
+  ru: { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин', snack: 'Перекус' },
+}
+
+// The order of a day's meals and each one's share of the day's calories / protein, by meals per day.
+const DAY_LAYOUT: Record<number, { slots: Slot[]; calories: Record<string, number>; protein: Record<string, number> }> = {
+  3: { slots: ['breakfast', 'lunch', 'dinner'], calories: { breakfast: 0.3, main: 0.35 }, protein: { breakfast: 0.3, main: 0.35 } },
+  4: {
+    slots: ['breakfast', 'lunch', 'snack', 'dinner'],
+    calories: { breakfast: 0.25, main: 0.3, snack: 0.15 },
+    protein: { breakfast: 0.25, main: 0.325, snack: 0.1 },
+  },
+  5: {
+    slots: ['breakfast', 'snack', 'lunch', 'snack', 'dinner'],
+    calories: { breakfast: 0.24, main: 0.28, snack: 0.1 },
+    protein: { breakfast: 0.22, main: 0.29, snack: 0.1 },
+  },
+}
+
+/**
+ * Lays the dish pools out into 7 days. Every dinner is eaten again as the next day's lunch, so each main dish
+ * is cooked once in a double batch, and the pool sizes (3 and 5) make all seven days different.
+ */
+function arrangeWeek(pools: any, slots: Slot[], locale: string) {
+  const dishes = (value: unknown) =>
+    (Array.isArray(value) ? value : []).filter((dish: any) => typeof dish?.dish === 'string' && dish.dish.trim())
+  const breakfasts = dishes(pools?.breakfasts)
+  const mains = dishes(pools?.mains)
+  const snacks = dishes(pools?.snacks)
+  if (!breakfasts.length || !mains.length || (slots.includes('snack') && !snacks.length)) return null
+
+  const names = SLOT_NAMES[locale] || SLOT_NAMES.en
+  return Array.from({ length: 7 }, (_, day) => {
+    let snack = day
+    const pick = (slot: Slot) =>
+      slot === 'breakfast'
+        ? breakfasts[day % breakfasts.length]
+        : slot === 'dinner'
+        ? mains[day % mains.length]
+        : slot === 'lunch'
+        ? mains[(day + mains.length - 1) % mains.length]
+        : snacks[snack++ % snacks.length]
+    return {
+      day: day + 1,
+      meals: slots.map((slot) => {
+        const dish = pick(slot)
+        const grams = (value: unknown) => `${Math.round(parseFloat(String(value)) || 0)}g`
+        return {
+          meal: names[slot],
+          options: [line(dish.dish, 300)],
+          calories: Math.round(Number(dish.calories) || 0),
+          protein: grams(dish.protein),
+          carbs: grams(dish.carbs),
+          fats: grams(dish.fats),
+        }
+      }),
+    }
+  })
+}
+
+/**
+ * The workouts and the meals are asked for separately and at the same time, and the meals come as pools of dishes
+ * that arrangeWeek turns into days: the answers are short, so the plan is ready several times sooner.
+ */
 export async function planFromAI(userData: any, locale: string, previous?: any) {
   // Targets come from the profile, not from the model: it tends to overshoot protein.
   const targets = calculateUserMetrics(userData)
+  const language = LANGUAGE_NAMES[locale] || 'English'
   const lastWeek = previous?.workouts ? JSON.stringify(previous.workouts).slice(0, 6000) : ''
   const lifts = previous?.lifts && Object.keys(previous.lifts).length ? JSON.stringify(previous.lifts).slice(0, 1500) : ''
-  const prompt = `
-      You are a team of an elite strength and conditioning coach, a sports dietitian and a nutritionist with years of practice with ordinary people, not only athletes. Create a JSON fitness plan for this user.
-      Write every text value (focus, exercise and meal names, options, notes, tips) in ${LANGUAGE_NAMES[locale] || 'English'}. Keep the JSON keys in English.
+  const frequency = Math.min(Math.max(Math.round(Number(userData?.trainingFrequency)) || 3, 1), 6)
+  const trainingDays = TRAINING_DAYS[frequency].join(', ')
 
-      User Profile:
+  const layout = DAY_LAYOUT[mealsPerDay(userData)]
+  const dayCalories = targets?.calories || 2000
+  const dayProtein = targets?.protein || Math.round((Number(userData?.weight) || 70) * proteinPerKg(String(userData?.fitnessGoal || '')))
+  const budget = (pool: 'breakfast' | 'main' | 'snack') => ({
+    calories: Math.round((dayCalories * layout.calories[pool]) / 10) * 10,
+    protein: Math.round(dayProtein * layout.protein[pool]),
+  })
+
+  const person = `
       - Name: ${line(userData?.name)}
       - Gender: ${line(userData?.gender)}
       - Age: ${line(userData?.age)}
@@ -149,21 +291,25 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
       - Weight: ${line(userData?.weight)} kg
       - Activity: ${line(userData?.activityLevel)}
       - Goal: ${line(userData?.fitnessGoal)}
-      - Frequency: ${line(userData?.trainingFrequency)} days/week
+      - Frequency: ${line(userData?.trainingFrequency)} days/week`
+
+  const workoutPrompt = `
+      You are an elite strength and conditioning coach with years of practice with ordinary people, not only athletes. Create a JSON 7-day workout plan for this user.
+      Write every text value (focus, exercise names, weight, notes) in ${language}. Keep the JSON keys in English. Answer with compact JSON.
+
+      User Profile:${person}
       - Equipment: ${list(userData?.equipmentAccess)}
       - Training wishes and limitations (in the user's own words; follow them): ${line(userData?.trainingNotes, 500) || 'none'}
-      - Diet: ${list(userData?.dietPreferences)}
-      - Foods and dishes the user likes and cooks (in the user's own words; use them often, and add other equally simple foods for variety): ${line(userData?.foodNotes, 500) || 'not specified'}
-      - Allergies: ${line(userData?.allergies, 300)}
-      - Meals per day: ${mealsPerDay(userData)}
+
+      Training days are days ${trainingDays} unless the user's wishes say otherwise; every other day is a rest day with an empty "exercises" list.
 
       ${lastWeek ? `This plan is for the NEXT week. Last week the user completed ${line(previous.completed, 3)} of ${line(previous.planned, 3)} planned workouts:
       ${lastWeek}
-      Build on it: if most workouts were done, progress modestly (a little more reps, sets or a harder variation) and swap one or two exercises per day for variety; if few were done, make the week easier to stick to. Vary the meals compared to a typical repeat.` : ''}
+      Build on it: if most workouts were done, progress modestly (a little more reps, sets or a harder variation) and swap one or two exercises per day for variety; if few were done, make the week easier to stick to.` : ''}
 
       ${lifts ? `Loads the user actually worked with (exercise -> load): ${lifts}. Base the recommended weights on them.` : ''}
 
-      REQUIRED JSON STRUCTURE (Create a 7-day plan):
+      REQUIRED JSON STRUCTURE:
       {
         "workoutPlan": [
           {
@@ -173,26 +319,9 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
               { "name": "Squats", "sets": "3", "reps": "12", "weight": "2 × 10", "rest": 60, "notes": "Keep back straight", "demo": "squat" }
             ]
           },
-          { "day": "Day 2", "focus": "Upper Body", "exercises": [...] },
-          ... (create 7 days total)
-        ],
-        "mealPlan": {
-          "calories": 2000,
-          "macros": { "protein": "150g", "carbs": "200g", "fats": "60g" },
-          "weeklyMeals": [
-            {
-              "day": 1,
-              "meals": [
-                { "meal": "Breakfast", "options": ["Oatmeal with berries"], "calories": 400, "protein": "20g", "carbs": "50g", "fats": "10g" },
-                { "meal": "Lunch", "options": ["Grilled chicken salad"], "calories": 500, "protein": "40g", "carbs": "30g", "fats": "20g" },
-                { "meal": "Dinner", "options": ["Salmon with vegetables"], "calories": 600, "protein": "45g", "carbs": "40g", "fats": "25g" },
-                { "meal": "Snack", "options": ["Apple with almond butter"], "calories": 200, "protein": "5g", "carbs": "25g", "fats": "10g" }
-              ]
-            },
-            ... (create 7 days total)
-          ]
-        },
-        "tips": ["Drink water", "Sleep 8 hours"]
+          { "day": "Day 2", "focus": "Rest", "exercises": [] },
+          ... (7 days total)
+        ]
       }
 
       Exercise variety: choose from the full range of exercises that fit the equipment and the user's wishes — compound and
@@ -200,31 +329,65 @@ export async function planFromAI(userData: any, locale: string, previous?: any) 
       not only those that have a demo. Do not repeat an exercise on two different days, and give each training day
       5-6 exercises that work well together.
 
-      For every exercise: "weight" is a recommended starting load for THIS user as a short text written in ${LANGUAGE_NAMES[locale] || 'English'}, units included
+      For every exercise: "weight" is a recommended starting load for THIS user as a short text written in ${language}, units included
       (two 8-kilogram dumbbells, bodyweight, a light band and so on). Base it on sex, body weight, goal and the available
       equipment, and stay on the conservative side: the last reps should be hard but clean.
-      "rest" is the rest between sets in seconds, and "demo" is the movement pattern
+      "rest" is the rest between sets in seconds, "notes" is one short technique cue, and "demo" is the movement pattern
       it matches, one of: ${DEMO_KEYS.join(', ')}. Use "" unless the exercise is that movement or a close variation of it.
-
-      ${targets ? `Daily nutrition targets are already calculated, use exactly these in "calories" and "macros": ${targets.calories} kcal, protein ${targets.protein}g, carbs ${targets.carbs}g, fats ${targets.fats}g.` : ''}
-      ${nutritionRules(userData)}
-
-      In "tips" give 4-5 short practical tips for THIS user from the dietitian and the coach: water (about 30-35 ml per kg of body weight a day), sleep, how to batch-cook the repeated dishes of this week, and what to eat around the workouts.
-
-      Days do not need the same calories: training days may be higher and rest days lower,
-      as long as the weekly average stays close to "calories". Each meal's numbers must be realistic for that meal.
     `
 
-  // JSON-режим гарантирует, что ответ будет в правильном формате
-  const plan = parseJson(await generateWithFallback(prompt, false))
-  if (!Array.isArray(plan?.workoutPlan) || !plan?.mealPlan) {
+  const mealPrompt = `
+      You are a team of a sports dietitian, a nutritionist and a strength coach with years of practice with ordinary people, not only athletes. Create a JSON 7-day meal plan for this user.
+      Write every text value (meal names, options, tips) in ${language}. Keep the JSON keys in English. Answer with compact JSON.
+
+      User Profile:${person}
+      - Diet: ${list(userData?.dietPreferences)}
+      - Foods and dishes the user likes and cooks (in the user's own words; use them often, and add other equally simple foods for variety): ${line(userData?.foodNotes, 500) || 'not specified'}
+      - Allergies: ${line(userData?.allergies, 300)}
+
+      ${lastWeek ? 'This plan is for the NEXT week: choose different dishes than a typical first week.' : ''}
+
+      You do not lay out the days yourself. Return pools of dishes; the app arranges them into the week: breakfasts rotate,
+      and every main dish is cooked once in a double batch and eaten as a dinner and as the next day's lunch.
+
+      REQUIRED JSON STRUCTURE:
+      {
+        "breakfasts": [ { "dish": "Oatmeal with milk and banana (oats 80 g, milk 200 ml, banana 120 g)", "calories": 400, "protein": "20g", "carbs": "50g", "fats": "10g" } ],
+        "mains": [ ... ],
+        "snacks": [ ... ],
+        "tips": ["Drink water", "Sleep 8 hours"]
+      }
+      - "breakfasts": exactly 3 different dishes, each about ${budget('breakfast').calories} kcal with about ${budget('breakfast').protein} g of protein.
+      - "mains": exactly 5 different lunch/dinner dishes, each about ${budget('main').calories} kcal with about ${budget('main').protein} g of protein. Use different protein sources and different sides across them; at least one is fish (unless the diet forbids it).
+      - "snacks": ${layout.slots.includes('snack') ? `exactly 3 different snacks, each about ${budget('snack').calories} kcal with about ${budget('snack').protein} g of protein` : 'an empty list'}.
+      Dishes of one pool must be equal in calories and protein (within 5%), because any of them can land on any day.
+      The protein figure is a limit, not a minimum: a dish may be 5 g under it but never over. Cooked lean meat, poultry and fish have 25-30 g of protein per 100 g, so a main dish here holds only about ${Math.max(60, Math.round((budget('main').protein - 10) / 0.28 / 10) * 10)} g of them, and never more. Reach the calories with a bigger side (grains, pasta, potatoes, bread), fruit, nuts and a little oil — not with more meat, eggs or cottage cheese.
+      Before answering, add up the protein of every dish from its ingredients and reduce the protein food if it is over the limit.
+      "dish" is written the way the rules below describe an item of "options".
+
+      ${nutritionRules(userData)}
+
+      For this request ignore the rules above about the number of meals a day, the weekly rotation and training-day carbohydrates: the app takes care of them.
+
+      In "tips" give 4-5 short practical tips for THIS user from the dietitian and the coach: water (about 30-35 ml per kg of body weight a day), sleep, how to batch-cook these dishes (each main is cooked for two meals), and what to eat around the workouts (training days: ${trainingDays}).
+    `
+
+  const [workouts, meals] = (await Promise.all([generateHedged(workoutPrompt), generateHedged(mealPrompt)])).map(parseJson)
+  const weeklyMeals = arrangeWeek(meals, layout.slots, locale)
+  if (!Array.isArray(workouts?.workoutPlan) || !weeklyMeals) {
     throw new Error('Gemini returned a plan with an unexpected structure')
   }
-  if (targets) {
-    plan.mealPlan.calories = targets.calories
-    plan.mealPlan.macros = { protein: `${targets.protein}g`, carbs: `${targets.carbs}g`, fats: `${targets.fats}g` }
+  const goal = String(userData?.fitnessGoal || '')
+  const macros = targets || calculateMacros(dayCalories, goal, dayProtein / proteinPerKg(goal))
+  return {
+    workoutPlan: workouts.workoutPlan,
+    mealPlan: {
+      calories: dayCalories,
+      macros: { protein: `${macros.protein}g`, carbs: `${macros.carbs}g`, fats: `${macros.fats}g` },
+      weeklyMeals,
+    },
+    tips: Array.isArray(meals.tips) ? meals.tips : [],
   }
-  return plan
 }
 
 const HISTORY_LIMIT = 12
@@ -395,6 +558,39 @@ Answer with a single JSON object: { "t": [ ...the ${texts.length} translated str
   const byOriginal = new Map(texts.map((original, i) => [original, String(translated[i] || original)]))
   for (const { holder, key } of slots) holder[key] = byOriginal.get(String(holder[key]).slice(0, 300)) ?? holder[key]
   return copy
+}
+
+export interface FoodEstimate {
+  name: string
+  calories: number
+  protein: number
+  carbs: number
+  fats: number
+}
+
+/** Calories and macros of something the user ate outside the plan, from their own description. */
+export async function foodFromAI(text: string, locale: string): Promise<FoodEstimate | null> {
+  const food = line(text, 200).replace(/["`]/g, '')
+  if (!food) return null
+
+  const prompt = `A person describes what they ate: "${food}".
+Estimate it like a dietitian using standard food composition tables. If no amount is given, assume one usual portion.
+
+Answer with a single JSON object:
+{ "name": "short name of the food with the amount, in ${LANGUAGE_NAMES[locale] || 'English'}", "calories": 0, "protein": 0, "carbs": 0, "fats": 0 }
+Calories are kcal, the rest are grams, all whole numbers.`
+
+  const parsed = parseJson(await generateWithFallback(prompt, true, true))
+  const number = (value: unknown) => Math.max(0, Math.round(parseFloat(String(value)) || 0))
+  const calories = number(parsed?.calories)
+  if (!calories || calories > 5000) return null
+  return {
+    name: line(parsed?.name, 120) || food,
+    calories,
+    protein: number(parsed?.protein),
+    carbs: number(parsed?.carbs),
+    fats: number(parsed?.fats),
+  }
 }
 
 export interface Recipe {
