@@ -1,3 +1,5 @@
+import { bestSet, type LiftSession } from './lifts'
+import { getMealDays } from './plan'
 import { toDateKey } from './utils'
 
 // The training week: which workouts and exercises of the current 7-day plan are done.
@@ -96,6 +98,39 @@ export function setExerciseDone(userData: any, day: number, index: number, done:
   const base = week.doneDays[day] ? setDayDone(userData, day, false, exerciseCount) : userData
   const baseWeek = weekOf(base)
   return { ...base, week: { ...baseWeek, doneExercises: { ...baseWeek.doneExercises, [day]: list } } }
+}
+
+export interface WeekSummary {
+  avgCalories: number | null // eaten per day, over the days with anything ticked; null when nothing was
+  weightChange: number | null // kg between the first and the last weigh-in of the week
+  records: number // exercises whose best set this week beat everything before it
+}
+
+/** How the week went, for the card shown when it ends. */
+export function weekSummary(userData: any): WeekSummary {
+  const week = weekOf(userData)
+
+  const eaten = getMealDays(userData?.plan?.mealPlan, true)
+    .map((day) => {
+      const ticked = week.eatenMeals[day.day] || []
+      const planned = day.meals.reduce((sum, meal, index) => sum + (ticked.includes(index) ? Number(meal.calories) || 0 : 0), 0)
+      return planned + (week.extraFood[day.day] || []).reduce((sum, food) => sum + (Number(food.calories) || 0), 0)
+    })
+    .filter((calories) => calories > 0)
+
+  const weights = ((userData?.progress || []) as any[]).filter((entry) => Number(entry?.weight) > 0 && entry.date >= week.start)
+
+  const records = Object.values((userData?.liftLog || {}) as Record<string, LiftSession[]>).filter((sessions) => {
+    const before = bestSet(sessions.filter((session) => session.date < week.start).flatMap((session) => session.sets))
+    const now = bestSet(sessions.filter((session) => session.date >= week.start).flatMap((session) => session.sets))
+    return Boolean(before && now && bestSet([before, now]) === now)
+  }).length
+
+  return {
+    avgCalories: eaten.length ? Math.round(eaten.reduce((sum, calories) => sum + calories, 0) / eaten.length) : null,
+    weightChange: weights.length > 1 ? Math.round((weights[weights.length - 1].weight - weights[0].weight) * 10) / 10 : null,
+    records,
+  }
 }
 
 /** Starts a fresh week, optionally with a new plan. */

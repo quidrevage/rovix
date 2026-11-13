@@ -6,7 +6,9 @@ import { AlertTriangle, ArrowLeftRight, Check, ChevronLeft, ChevronRight, Extern
 import { useLocale, useTranslations } from 'next-intl'
 import { langIndex, matchDemo } from '@/lib/exercises'
 import { checkAIConfigured, explainExercise, getCachedGuide, type ExerciseGuide } from '@/lib/gemini'
+import { addLiftSet, bestSet, clearLiftToday, formatSet, liftKey as keyOfLift, liftSessions } from '@/lib/lifts'
 import { setsOf, type ExerciseView } from '@/lib/plan'
+import { toDateKey } from '@/lib/utils'
 import { useUser } from '@/context/UserContext'
 import ExerciseFigure from './ExerciseFigure'
 
@@ -37,7 +39,7 @@ export default function ExerciseModal({ exercise, onClose, onAllSetsDone, onSwap
 
   // The load the user actually works with, remembered per exercise name.
   const { userData, setUserData } = useUser()
-  const liftKey = exercise.name.trim().toLowerCase()
+  const liftKey = keyOfLift(exercise.name)
   const myWeight: string = userData?.lifts?.[liftKey] || ''
   const saveMyWeight = (value: string) =>
     setUserData((current: any) => ({ ...current, lifts: { ...current?.lifts, [liftKey]: value.slice(0, 30) } }))
@@ -48,9 +50,23 @@ export default function ExerciseModal({ exercise, onClose, onAllSetsDone, onSwap
     if (!(await onSwap())) setSwapState('error') // on success the dialog is closed by the parent
   }
 
+  // The journal: what was really lifted in each set, today and before.
+  const sessions = liftSessions(userData, exercise.name)
+  const today = toDateKey()
+  const todaySets = sessions[sessions.length - 1]?.date === today ? sessions[sessions.length - 1].sets : []
+  const earlier = sessions.filter((session) => session.date !== today)
+  const previous = earlier[earlier.length - 1]
+  const record = bestSet(earlier.flatMap((session) => session.sets))
+  const todayBest = bestSet(todaySets)
+  const newRecord = Boolean(record && todayBest && bestSet([record, todayBest]) === todayBest)
+
   const totalSets = setsOf(exercise.sets)
-  const [doneSets, setDoneSets] = useState(0)
+  const [doneSets, setDoneSets] = useState(() => Math.min(todaySets.length, totalSets))
   const [restLeft, setRestLeft] = useState(0)
+  // Start from the latest logged set, so usually there is nothing to type.
+  const lastSet = todaySets[todaySets.length - 1] || previous?.sets[0]
+  const [kg, setKg] = useState(() => String(lastSet?.kg || parseFloat(myWeight.replace(',', '.')) || ''))
+  const [reps, setReps] = useState(() => String(lastSet?.reps || parseInt(exercise.reps, 10) || ''))
 
   const askAI = useCallback(async () => {
     setGuideState('loading')
@@ -115,12 +131,21 @@ export default function ExerciseModal({ exercise, onClose, onAllSetsDone, onSwap
 
   const completeSet = () => {
     const next = Math.min(doneSets + 1, totalSets)
+    const load = Math.min(Math.max(parseFloat(kg.replace(',', '.')) || 0, 0), 999)
+    const count = Math.min(Math.max(parseInt(reps, 10) || 0, 0), 999)
+    if (count > 0)
+      setUserData((current: any) => {
+        const logged = addLiftSet(current, exercise.name, { kg: load, reps: count })
+        // The next plan bases its recommended weights on `lifts`.
+        return load > 0 ? { ...logged, lifts: { ...logged.lifts, [liftKey]: `${load} ${t('kg')}` } } : logged
+      })
     setDoneSets(next)
     setRestLeft(next < totalSets ? exercise.restSeconds : 0)
     if (next === totalSets) onAllSetsDone?.()
   }
 
   const resetSets = () => {
+    setUserData((current: any) => clearLiftToday(current, exercise.name))
     setDoneSets(0)
     setRestLeft(0)
   }
@@ -372,6 +397,46 @@ export default function ExerciseModal({ exercise, onClose, onAllSetsDone, onSwap
                   </span>
                 ))}
               </div>
+              <div className="mb-3 space-y-1 text-sm text-gray-600">
+                {todaySets.length > 0 && (
+                  <p>
+                    {t('today', { sets: todaySets.map(formatSet).join(' · ') })}
+                    {newRecord && <span className="ml-2 font-semibold text-fitness-orange">{t('newRecord')}</span>}
+                  </p>
+                )}
+                {previous && (
+                  <p>
+                    {t('lastTime', {
+                      date: new Date(`${previous.date}T00:00:00`).toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
+                      sets: previous.sets.map(formatSet).join(' · '),
+                    })}
+                  </p>
+                )}
+                {record && <p>{t('record', { set: formatSet(record) })}</p>}
+              </div>
+              {!finished && !resting && (
+                <div className="mb-3 grid grid-cols-2 gap-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    <span className="mb-1 block">{t('kg')}</span>
+                    <input
+                      inputMode="decimal"
+                      value={kg}
+                      onChange={(e) => setKg(e.target.value.slice(0, 6))}
+                      placeholder="0"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-lg font-semibold tabular-nums focus:border-transparent focus:ring-2 focus:ring-fitness-orange"
+                    />
+                  </label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    <span className="mb-1 block">{t('reps')}</span>
+                    <input
+                      inputMode="numeric"
+                      value={reps}
+                      onChange={(e) => setReps(e.target.value.slice(0, 3))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-lg font-semibold tabular-nums focus:border-transparent focus:ring-2 focus:ring-fitness-orange"
+                    />
+                  </label>
+                </div>
+              )}
               {finished ? (
                 <p className="font-semibold text-fitness-green">{t('allDone')}</p>
               ) : resting ? (

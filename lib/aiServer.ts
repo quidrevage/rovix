@@ -1,5 +1,5 @@
 import 'server-only'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenerativeAI, type Part } from '@google/generative-ai'
 import { DEMO_KEYS } from './exercises'
 import { compactPlan, sanitizeChanges } from './plan'
 import { detectLanguage, type ChatResult, type ChatTurn, type ExerciseGuide } from './aiShared'
@@ -36,7 +36,7 @@ const coolingUntil: Record<string, number> = {}
  * Tries each model in turn. Overload (503), rate limit (429) and timeouts move on to the next model;
  * the long plan request also retries once before moving on.
  */
-async function generateWithFallback(prompt: string, interactive: boolean, preferFast = false) {
+async function generateWithFallback(prompt: string | Array<string | Part>, interactive: boolean, preferFast = false) {
   const now = Date.now()
   const cooling = (model: string) => (coolingUntil[model] || 0) > now
   // A technique guide is simple and shown in an open dialog, so speed matters more than the bigger model.
@@ -562,30 +562,41 @@ Answer with a single JSON object: { "t": [ ...the ${texts.length} translated str
 
 export interface FoodEstimate {
   name: string
+  grams?: number // the portion the numbers are for; only for a photo
   calories: number
   protein: number
   carbs: number
   fats: number
 }
 
-/** Calories and macros of something the user ate outside the plan, from their own description. */
-export async function foodFromAI(text: string, locale: string): Promise<FoodEstimate | null> {
+/** Calories and macros of something the user ate outside the plan, from their own description or a photo of it. */
+export async function foodFromAI(text: string, locale: string, image?: { data: string; mimeType: string }): Promise<FoodEstimate | null> {
   const food = line(text, 200).replace(/["`]/g, '')
-  if (!food) return null
+  if (!food && !image) return null
+  const language = LANGUAGE_NAMES[locale] || 'English'
 
-  const prompt = `A person describes what they ate: "${food}".
+  const prompt = image
+    ? `The photo shows food a person is eating. Name it and estimate the weight of the whole visible portion in grams,
+then estimate that portion like a dietitian using standard food composition tables (count visible oil, sauces and dressings).
+If the photo shows no food, answer with "calories": 0.
+
+Answer with a single JSON object:
+{ "name": "short name of the food without the amount, in ${language}", "grams": 0, "calories": 0, "protein": 0, "carbs": 0, "fats": 0 }
+Calories are kcal, the rest are grams, all whole numbers.`
+    : `A person describes what they ate: "${food}".
 Estimate it like a dietitian using standard food composition tables. If no amount is given, assume one usual portion.
 
 Answer with a single JSON object:
-{ "name": "short name of the food with the amount, in ${LANGUAGE_NAMES[locale] || 'English'}", "calories": 0, "protein": 0, "carbs": 0, "fats": 0 }
+{ "name": "short name of the food with the amount, in ${language}", "calories": 0, "protein": 0, "carbs": 0, "fats": 0 }
 Calories are kcal, the rest are grams, all whole numbers.`
 
-  const parsed = parseJson(await generateWithFallback(prompt, true, true))
+  const parsed = parseJson(await generateWithFallback(image ? [prompt, { inlineData: image }] : prompt, true, true))
   const number = (value: unknown) => Math.max(0, Math.round(parseFloat(String(value)) || 0))
   const calories = number(parsed?.calories)
   if (!calories || calories > 5000) return null
   return {
     name: line(parsed?.name, 120) || food,
+    ...(image && number(parsed?.grams) ? { grams: number(parsed.grams) } : {}),
     calories,
     protein: number(parsed?.protein),
     carbs: number(parsed?.carbs),

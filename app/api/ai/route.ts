@@ -9,7 +9,8 @@ export const dynamic = 'force-dynamic'
 // Plan generation is slow; hosts with a lower limit will cut it off and the app falls back to the demo plan.
 export const maxDuration = 300
 
-const MAX_BODY_CHARS = 200_000
+// Room for one food photo, which the browser shrinks before sending.
+const MAX_BODY_CHARS = 500_000
 const LOCALES = ['en', 'uk', 'ru']
 
 const fail = (error: string, status: number) => NextResponse.json({ error }, { status })
@@ -84,8 +85,9 @@ export async function POST(request: Request) {
       }
 
       case 'food': {
-        if (typeof body.text !== 'string' || !body.text.trim()) return fail('bad_request', 400)
-        const food = await foodFromAI(body.text, locale)
+        const photo = typeof body.image === 'string' ? /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(body.image) : null
+        if (!photo && (typeof body.text !== 'string' || !body.text.trim())) return fail('bad_request', 400)
+        const food = await foodFromAI(photo ? '' : body.text, locale, photo ? { mimeType: photo[1], data: photo[2] } : undefined)
         return food ? NextResponse.json({ food }) : fail('ai_failed', 502)
       }
 

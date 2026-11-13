@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { withActiveDay } from "@/lib/streak";
 
 // Типизация пользователя
 type UserType = {
@@ -66,7 +67,7 @@ export const UserProvider = ({ children }: { children: React.ReactNode }) => {
 
   // 3. ФУНКЦИЯ СОХРАНЕНИЯ (Вместо базы данных)
   const setUserData = useCallback((update: UserDataUpdate) => {
-    const next = typeof update === "function" ? update(latest.current) : update;
+    const next = withActiveDay(typeof update === "function" ? update(latest.current) : update);
     latest.current = next;
     setUserDataState(next);
     try {

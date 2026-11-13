@@ -239,8 +239,14 @@
       "done": "Workouts done: {done} of {total}.",
       "nextHint": "Choose what is next: a new plan that builds on this one, or repeat this week.",
       "newPlan": "New plan for the week",
-      "repeat": "Repeat this week"
-    }
+      "repeat": "Repeat this week",
+      "summary": {
+        "calories": "Food: {avg} of {target} kcal a day on average",
+        "weight": "Weight over the week: {change} kg",
+        "records": "New exercise records: {count}"
+      }
+    },
+    "streak": "{days, plural, one {# day} other {# days}} in a row"
   },
   "progress": {
     "title": "Progress Tracking",
@@ -258,7 +264,8 @@
       "workoutFrequency": "Workout Frequency",
       "weight": "Weight (kg)",
       "calories": "Calories",
-      "workoutsPerDay": "Workouts per Day"
+      "workoutsPerDay": "Workouts per Day",
+      "measurements": "Body measurements"
     },
     "goals": {
       "yourGoals": "Your Goals",
@@ -287,7 +294,10 @@
       "calories": "Calories",
       "workouts": "Workouts",
       "save": "Save Entry",
-      "hint": "Saving the same date again replaces that entry."
+      "hint": "Fill in only the fields you need: saving the same date again updates them and keeps the rest.",
+      "waist": "Waist (cm)",
+      "chest": "Chest (cm)",
+      "hips": "Hips (cm)"
     },
     "adjust": {
       "title": "Calorie adjustment",
@@ -300,7 +310,14 @@
     },
     "noData": "No entries for this period yet. Add your first one above.",
     "notSet": "Not set",
-    "kcalPerDay": "kcal/day"
+    "kcalPerDay": "kcal/day",
+    "strength": {
+      "title": "Strength by exercise",
+      "empty": "Log weight and reps in an exercise — the chart will appear here.",
+      "kg": "Best weight (kg)",
+      "reps": "Best reps",
+      "record": "Record: {set}"
+    }
   },
   "mealPlan": {
     "title": "Weekly Meal Plan",
@@ -347,7 +364,15 @@
       "placeholder": "Ate something off the plan? Type it: \"kebab wrap\", \"2 slices of pizza\"",
       "add": "Add",
       "error": "Couldn't estimate it. Try describing it differently.",
-      "remove": "Remove"
+      "remove": "Remove",
+      "photo": "Photo",
+      "hint": "You can take a photo of the dish or of the barcode on the package, or type the barcode digits.",
+      "photoError": "Could not recognise food in the photo. Try again or describe it in words.",
+      "barcodeError": "No product found for this barcode. Describe it in words.",
+      "grams": "Grams",
+      "g": "g",
+      "checkAmount": "a rough estimate, correct the weight if needed",
+      "cancel": "Cancel"
     },
     "favorite": {
       "save": "Add to favourites",
@@ -490,6 +515,12 @@
     "myWeightPlaceholder": "e.g. 12 kg",
     "myWeightHint": "Saved automatically; the next plan bases its recommendations on it. The recommended weight is an estimate — start lighter if unsure.",
     "swap": "Replace this exercise",
-    "swapError": "Couldn't replace the exercise. Please try again."
+    "swapError": "Couldn't replace the exercise. Please try again.",
+    "kg": "kg",
+    "reps": "Reps",
+    "today": "Today: {sets}",
+    "lastTime": "Last time ({date}): {sets}",
+    "record": "Record: {set}",
+    "newRecord": "New record! 🏆"
   }
 }

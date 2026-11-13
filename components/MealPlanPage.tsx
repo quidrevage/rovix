@@ -23,6 +23,7 @@ import {
   Check,
   Heart,
   Plus,
+  Camera,
 } from 'lucide-react'
 import Navbar from './ui/Navbar'
 import Card from './ui/Card'
@@ -30,6 +31,7 @@ import Button from './ui/Button'
 import PlanTranslator from './PlanTranslator'
 import { chatWithAI, estimateFood, generateFitnessPlan, getRecipe, type Recipe } from '@/lib/gemini'
 import { applyPlanChanges, getMealDays, mealKind } from '@/lib/plan'
+import { isBarcode, lookupBarcode, photoToDataUrl, readBarcode, scalePortion, type Portion } from '@/lib/food'
 import { daysInto, setExtraFood, setMealEaten, startNewWeek, weekOf, type ExtraFood } from '@/lib/week'
 
 const ShoppingList = dynamic(() => import('./ShoppingList'), { ssr: false })
@@ -48,13 +50,50 @@ export default function MealPlanPage() {
   const [recipe, setRecipe] = useState<{ dish: string; data?: Recipe | null } | null>(null)
 
   const [extraText, setExtraText] = useState('')
-  const [extraState, setExtraState] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [extraState, setExtraState] = useState<'idle' | 'loading' | 'error' | 'photoError' | 'barcodeError'>('idle')
+  // A photographed or scanned food waits here until the user confirms its amount.
+  const [portion, setPortion] = useState<Portion | null>(null)
+  const [portionGrams, setPortionGrams] = useState('')
+
+  const offerPortion = (found: Portion | null, error: 'photoError' | 'barcodeError') => {
+    if (found) {
+      setPortion(found)
+      setPortionGrams(String(found.grams))
+    }
+    setExtraState(found ? 'idle' : error)
+  }
+
+  // A photo of a barcode is looked up in the product database; any other photo is estimated as a dish.
+  const addPhoto = async (day: number, file: File) => {
+    if (extraState === 'loading') return
+    setExtraState('loading')
+    const code = await readBarcode(file)
+    if (code) return offerPortion(await lookupBarcode(code), 'barcodeError')
+    const image = await photoToDataUrl(file)
+    const food = image ? await estimateFood('', locale, image) : null
+    if (food && !food.grams) {
+      setUserData((current: any) => setExtraFood(current, day, food))
+      setExtraState('idle')
+    } else offerPortion(food ? { ...food, grams: food.grams as number } : null, 'photoError')
+  }
+
+  const confirmPortion = (day: number) => {
+    const grams = Math.round(parseFloat(portionGrams.replace(',', '.')) || 0)
+    if (!portion || grams <= 0 || grams > 5000) return
+    setUserData((current: any) => setExtraFood(current, day, scalePortion(portion, grams, t('extra.g'))))
+    setPortion(null)
+  }
 
   // Food eaten outside the plan: described in words, counted into the day's progress.
   const addExtraFood = async (day: number) => {
     const text = extraText.trim()
     if (!text || extraState === 'loading') return
     setExtraState('loading')
+    if (isBarcode(text)) {
+      const found = await lookupBarcode(text)
+      if (found) setExtraText('')
+      return offerPortion(found, 'barcodeError')
+    }
     const food = await estimateFood(text, locale)
     if (!food) {
       setExtraState('error')
@@ -443,8 +482,56 @@ export default function MealPlanPage() {
                         <Plus className="w-4 h-4 mr-1" />
                         {t('extra.add')}
                       </Button>
+                      <label
+                        className={`flex cursor-pointer items-center justify-center gap-1 rounded-lg border-2 border-primary-500 px-4 py-2 text-sm font-semibold text-primary-600 hover:bg-primary-50 ${
+                          extraState === 'loading' ? 'pointer-events-none opacity-60' : ''
+                        }`}
+                      >
+                        <Camera className="w-4 h-4" />
+                        {t('extra.photo')}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            e.target.value = ''
+                            if (file) addPhoto(selectedDay, file)
+                          }}
+                        />
+                      </label>
                     </form>
-                    {extraState === 'error' && <p className="mt-2 text-sm text-red-600">{t('extra.error')}</p>}
+                    <p className="mt-2 text-xs text-gray-500">{t('extra.hint')}</p>
+                    {extraState !== 'idle' && extraState !== 'loading' && (
+                      <p className="mt-2 text-sm text-red-600">{t(`extra.${extraState}`)}</p>
+                    )}
+                    {portion && (
+                      <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-fitness-orange bg-orange-50 p-3 dark:bg-gray-800">
+                        <div className="min-w-[10rem] flex-1">
+                          <p className="font-semibold">{portion.name}</p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                            {Math.round((portion.calories * (parseFloat(portionGrams.replace(',', '.')) || 0)) / portion.grams)} {t('cal')} ·{' '}
+                            {t('extra.checkAmount')}
+                          </p>
+                        </div>
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          <span className="mb-1 block">{t('extra.grams')}</span>
+                          <input
+                            inputMode="decimal"
+                            value={portionGrams}
+                            onChange={(e) => setPortionGrams(e.target.value.slice(0, 5))}
+                            className="w-24 rounded-lg border border-gray-300 px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-fitness-orange dark:bg-gray-700 dark:border-gray-600"
+                          />
+                        </label>
+                        <Button type="button" size="sm" onClick={() => confirmPortion(selectedDay)}>
+                          {t('extra.add')}
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setPortion(null)}>
+                          {t('extra.cancel')}
+                        </Button>
+                      </div>
+                    )}
                   </div>,
                   ...meals.map((meal: any, index: number) => (
                   <motion.div

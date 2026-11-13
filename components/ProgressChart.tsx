@@ -12,9 +12,11 @@ interface Props {
   color: string
   name: string
   wholeNumbers?: boolean
+  /** More lines on the same line chart. */
+  more?: { dataKey: string; color: string; name: string }[]
 }
 
-export default function ProgressChart({ kind, data, dataKey, color, name, wholeNumbers }: Props) {
+export default function ProgressChart({ kind, data, dataKey, color, name, wholeNumbers, more = [] }: Props) {
   return (
     <ResponsiveContainer width="100%" height={300}>
       {kind === 'line' ? (
@@ -25,6 +27,9 @@ export default function ProgressChart({ kind, data, dataKey, color, name, wholeN
           <Tooltip />
           <Legend />
           <Line type="monotone" dataKey={dataKey} connectNulls stroke={color} strokeWidth={2} name={name} />
+          {more.map((line) => (
+            <Line key={line.dataKey} type="monotone" dataKey={line.dataKey} connectNulls stroke={line.color} strokeWidth={2} name={line.name} />
+          ))}
         </LineChart>
       ) : (
         <BarChart data={data}>

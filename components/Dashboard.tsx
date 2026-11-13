@@ -20,6 +20,7 @@ import {
   Repeat,
   Sparkles,
   Shuffle,
+  Flame,
 } from 'lucide-react'
 import { useLocale, useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
@@ -32,7 +33,8 @@ import { useUser } from '@/context/UserContext'
 import { calculateUserMetrics } from '@/lib/utils'
 import { chatWithAI, generateFitnessPlan } from '@/lib/gemini'
 import { applyPlanChanges, compactPlan, getMealDays, getWorkoutDays, mealKind, type ExerciseView } from '@/lib/plan'
-import { WEEK_DAYS, clearExerciseMarks, daysInto, setDayDone, setExerciseDone, startNewWeek, weekOf } from '@/lib/week'
+import { WEEK_DAYS, clearExerciseMarks, daysInto, setDayDone, setExerciseDone, startNewWeek, weekOf, weekSummary } from '@/lib/week'
+import { streakOf } from '@/lib/streak'
 
 // Not needed for the first paint: the chat, the exercise dialog and the PDF library load on their own.
 const AICoach = dynamic(() => import('./AICoach'), { ssr: false })
@@ -60,6 +62,8 @@ export default function Dashboard() {
   const weekDay = daysInto(week) + 1
   const weekOver = weekDay > WEEK_DAYS
   const weekFinished = trainingDays.length > 0 && doneCount === trainingDays.length
+  const summary = weekSummary(userData)
+  const streak = streakOf(userData)
 
   // `nextWeek`: the new plan builds on the one just finished instead of starting from scratch.
   const regeneratePlans = async (nextWeek = false) => {
@@ -185,6 +189,12 @@ export default function Dashboard() {
           <p className="text-gray-600">
             {t('personalizedPlan')}
           </p>
+          {streak > 0 && (
+            <p className="mt-3 inline-flex items-center gap-2 rounded-full bg-orange-100 px-4 py-1.5 text-sm font-semibold text-fitness-orange">
+              <Flame className="h-4 w-4" />
+              {t('streak', { days: streak })}
+            </p>
+          )}
           {userData?.plan?.demo && (
             <p className="mt-4 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-800">
               {t('demoNotice')}
@@ -254,6 +264,17 @@ export default function Dashboard() {
                     style={{ width: `${(doneCount / trainingDays.length) * 100}%` }}
                   />
                 </div>
+                {(weekOver || weekFinished) && (
+                  <ul className="mt-3 space-y-1 text-sm text-gray-700">
+                    {summary.avgCalories !== null && (
+                      <li>{t('week.summary.calories', { avg: summary.avgCalories, target: metrics.calories })}</li>
+                    )}
+                    {summary.weightChange !== null && (
+                      <li>{t('week.summary.weight', { change: `${summary.weightChange > 0 ? '+' : ''}${summary.weightChange}` })}</li>
+                    )}
+                    {summary.records > 0 && <li>{t('week.summary.records', { count: summary.records })}</li>}
+                  </ul>
+                )}
               </div>
               {(weekOver || weekFinished) && (
                 <div className="flex flex-wrap gap-3">

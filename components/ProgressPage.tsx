@@ -2,13 +2,14 @@
 
 import React, { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
-import { TrendingUp, TrendingDown, Target, Weight, Activity, BarChart3, Plus } from 'lucide-react'
+import { TrendingUp, TrendingDown, Target, Weight, Activity, BarChart3, Plus, Dumbbell, Ruler } from 'lucide-react'
 import dynamic from 'next/dynamic'
 import { useLocale, useTranslations } from 'next-intl'
 import { useRouter } from 'next/navigation'
 import { useUser } from '@/context/UserContext'
 import { calculateUserMetrics, calorieAdvice, toDateKey } from '@/lib/utils'
 import { GOAL_KEYS } from '@/lib/options'
+import { bestSet, formatSet, type LiftSession } from '@/lib/lifts'
 import Card from './ui/Card'
 import Navbar from './ui/Navbar'
 import Button from './ui/Button'
@@ -20,7 +21,13 @@ interface ProgressEntry {
   weight?: number
   calories?: number
   workouts?: number
+  waist?: number // cm
+  chest?: number
+  hips?: number
 }
+
+const MEASURES = ['waist', 'chest', 'hips'] as const
+const MEASURE_COLORS = { waist: '#ff6b35', chest: '#9b59b6', hips: '#10b981' }
 
 const PERIOD_DAYS = { week: 7, month: 30, year: 365 } as const
 type Period = keyof typeof PERIOD_DAYS
@@ -45,7 +52,8 @@ export default function ProgressPage() {
   const locale = useLocale()
   const router = useRouter()
   const [selectedPeriod, setSelectedPeriod] = useState<Period>('month')
-  const [form, setForm] = useState({ date: toDateInput(new Date()), weight: '', calories: '', workouts: '' })
+  const [form, setForm] = useState({ date: toDateInput(new Date()), weight: '', calories: '', workouts: '', waist: '', chest: '', hips: '' })
+  const [selectedLift, setSelectedLift] = useState('')
 
   const entries: ProgressEntry[] = useMemo(() => userData?.progress || [], [userData])
 
@@ -108,20 +116,42 @@ export default function ProgressPage() {
     e.preventDefault()
     if (!form.date) return
 
-    const entry: ProgressEntry = {
-      date: form.date,
-      weight: optionalNumber(form.weight),
-      calories: optionalNumber(form.calories),
-      workouts: optionalNumber(form.workouts),
-    }
-    if (entry.weight === undefined && entry.calories === undefined && entry.workouts === undefined) return
+    // Only the filled fields: saving a waist measurement must not erase the day's weight.
+    const filled = Object.fromEntries(
+      (['weight', 'calories', 'workouts', ...MEASURES] as const)
+        .map((key) => [key, optionalNumber(form[key])] as const)
+        .filter(([, value]) => value !== undefined)
+    )
+    if (Object.keys(filled).length === 0) return
 
+    const entry: ProgressEntry = { ...entries.find((item) => item.date === form.date), ...filled, date: form.date }
     const progress = [...entries.filter((item) => item.date !== entry.date), entry].sort((a, b) =>
       a.date.localeCompare(b.date)
     )
     setUserData({ ...userData, progress })
-    setForm({ ...form, weight: '', calories: '', workouts: '' })
+    setForm({ date: form.date, weight: '', calories: '', workouts: '', waist: '', chest: '', hips: '' })
   }
+
+  const measured = MEASURES.filter((key) => currentData.some((entry) => entry[key] !== undefined))
+
+  // Strength: the best set of every logged session of the chosen exercise.
+  const liftLog: Record<string, LiftSession[]> = userData.liftLog || {}
+  const liftNames = Object.keys(liftLog).sort()
+  const lift = liftLog[selectedLift] ? selectedLift : liftNames[0]
+  const liftAll = liftLog[lift] || []
+  const liftRecord = bestSet(liftAll.flatMap((session) => session.sets))
+  const liftWeighted = Boolean(liftRecord && liftRecord.kg > 0)
+  const liftFrom = new Date()
+  liftFrom.setDate(liftFrom.getDate() - PERIOD_DAYS[selectedPeriod] + 1)
+  const liftData = liftAll
+    .filter((session) => session.date >= toDateInput(liftFrom))
+    .map((session) => {
+      const best = bestSet(session.sets)
+      return {
+        label: new Date(`${session.date}T00:00:00`).toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
+        best: best && (liftWeighted ? best.kg : best.reps),
+      }
+    })
 
   const noData = <p className="py-12 text-center text-gray-500">{t('noData')}</p>
 
@@ -173,7 +203,7 @@ export default function ProgressPage() {
             <Plus className="w-5 h-5 text-fitness-orange" />
             {t('log.title')}
           </h3>
-          <form onSubmit={saveEntry} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+          <form onSubmit={saveEntry} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
             <label className="block text-sm font-medium text-gray-700">
               <span className="block mb-2">{t('log.date')}</span>
               <input
@@ -216,6 +246,19 @@ export default function ProgressPage() {
                 className={inputClass}
               />
             </label>
+            {MEASURES.map((key) => (
+              <label key={key} className="block text-sm font-medium text-gray-700">
+                <span className="block mb-2">{t(`log.${key}`)}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={form[key]}
+                  onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                  className={inputClass}
+                />
+              </label>
+            ))}
             <Button type="submit" size="sm" className="py-3">
               {t('log.save')}
             </Button>
@@ -307,6 +350,57 @@ export default function ProgressPage() {
           </h3>
           {stats.workoutsCompleted === 0 ? noData : (
             <ProgressChart kind="bar" data={currentData} dataKey="workouts" color="#9b59b6" name={t('charts.workoutsPerDay')} wholeNumbers />
+          )}
+        </Card>
+
+        {measured.length > 0 && (
+          <Card className="mt-6">
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <Ruler className="w-5 h-5 text-fitness-green" />
+              {t('charts.measurements')}
+            </h3>
+            <ProgressChart
+              kind="line"
+              data={currentData}
+              dataKey={measured[0]}
+              color={MEASURE_COLORS[measured[0]]}
+              name={t(`log.${measured[0]}`)}
+              more={measured.slice(1).map((key) => ({ dataKey: key, color: MEASURE_COLORS[key], name: t(`log.${key}`) }))}
+            />
+          </Card>
+        )}
+
+        <Card className="mt-6">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h3 className="text-xl font-bold flex items-center gap-2">
+              <Dumbbell className="w-5 h-5 text-fitness-orange" />
+              {t('strength.title')}
+            </h3>
+            {liftNames.length > 0 && (
+              <select value={lift} onChange={(e) => setSelectedLift(e.target.value)} className={`${inputClass} capitalize sm:w-72`}>
+                {liftNames.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {liftNames.length === 0 ? (
+            <p className="py-12 text-center text-gray-500">{t('strength.empty')}</p>
+          ) : (
+            <>
+              {liftRecord && <p className="mb-2 text-sm text-gray-600">{t('strength.record', { set: formatSet(liftRecord) })}</p>}
+              {liftData.length === 0 ? noData : (
+                <ProgressChart
+                  kind="line"
+                  data={liftData}
+                  dataKey="best"
+                  color="#ff6b35"
+                  name={t(liftWeighted ? 'strength.kg' : 'strength.reps')}
+                />
+              )}
+            </>
           )}
         </Card>
 
